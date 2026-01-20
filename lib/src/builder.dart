@@ -135,7 +135,7 @@ class ZigBuilder implements Builder {
     String zigDirectory = path.join(packageRoot, zigDir);
 
     if (!Directory(zigDirectory).existsSync()) {
-      throw BuildError(message: 'Zig directory not found: $zigDirectory');
+      throw BuildError(message: 'Zig directory not found: $zigDirectory.');
     }
 
     File buildZig = File(path.join(zigDirectory, 'build.zig'));
@@ -143,16 +143,17 @@ class ZigBuilder implements Builder {
     if (!buildZig.existsSync()) {
       throw BuildError(
         message:
-            'build.zig not found in $zigDirectory\n'
+            'build.zig not found in $zigDirectory.\n'
             'Create a build.zig file for your Zig project.',
       );
     }
 
     Architecture targetArch = input.config.code.targetArchitecture;
     OS targetOS = input.config.code.targetOS;
-    Target target = Target.from(targetArch, targetOS);
+    LinkMode linkMode = input.config.code.linkMode;
+    Target target = Target.from(targetArch, targetOS, linkMode);
 
-    logger.info('Building for ${target.triple} ($optimization)');
+    logger.info('Building for ${target.triple} ($optimization).');
 
     String prefixPath = input.outputDirectory.toFilePath();
 
@@ -215,14 +216,14 @@ class ZigBuilder implements Builder {
         CodeAsset(
           package: packageName,
           name: assetName,
-          linkMode: DynamicLoadingBundled(),
+          linkMode: linkMode,
           file: libPath,
         ),
         routing: routing,
       );
     }
 
-    logger.info('Built ${target.libraryFileName(libName)}');
+    logger.info('Built ${target.libraryFileName(libName)}.');
   }
 }
 
@@ -236,7 +237,7 @@ Future<Uri> _locateLibrary(Uri outputDir, String libName, Target target) async {
   ];
 
   for (Uri path in searchPaths) {
-    if (File(path.toFilePath()).existsSync()) {
+    if (File.fromUri(path).existsSync()) {
       return path;
     }
   }
@@ -250,4 +251,16 @@ Future<Uri> _locateLibrary(Uri outputDir, String libName, Target target) async {
         'Built library not found. Searched:\n$paths\n'
         'Verify library name matches build.zig.',
   );
+}
+
+extension on CodeConfig {
+  LinkMode get linkMode {
+    return switch (linkModePreference) {
+      LinkModePreference.dynamic ||
+      LinkModePreference.preferDynamic => DynamicLoadingBundled(),
+      LinkModePreference.static || LinkModePreference.preferStatic =>
+        throw UnimplementedError('LinkModePreference: $linkModePreference'),
+      _ => throw UnsupportedError('LinkModePreference: $linkModePreference'),
+    };
+  }
 }

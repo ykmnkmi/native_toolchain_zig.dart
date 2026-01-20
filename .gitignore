@@ -3,4 +3,5 @@
 .dart_tool/
 .zig-cache/
 build/
+zig-out/
 pubspec.lock

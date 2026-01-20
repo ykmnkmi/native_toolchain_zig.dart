@@ -26,14 +26,19 @@ final class Target {
   /// Creates a [Target] from Dart's [OS] and [Architecture].
   ///
   /// Throws [UnsupportedError] if the platform is not supported.
-  factory Target.from(Architecture arch, OS os) {
+  factory Target.from(Architecture arch, OS os, LinkMode linkMode) {
     String archStr = _mapArch(arch);
     var (String osStr, String? abiStr) = _mapOS(os);
-    return Target(arch: archStr, os: osStr, abi: abiStr);
+    return Target(arch: archStr, os: osStr, abi: abiStr, linkMode: linkMode);
   }
 
   /// Creates a [Target] with explicit components.
-  const Target({required this.arch, required this.os, this.abi});
+  const Target({
+    required this.arch,
+    required this.os,
+    this.abi,
+    required this.linkMode,
+  });
 
   /// The architecture (e.g., 'x86_64', 'aarch64').
   final String arch;
@@ -43,6 +48,8 @@ final class Target {
 
   /// The ABI (e.g., 'gnu', 'musl', 'android'). May be null.
   final String? abi;
+
+  final LinkMode linkMode;
 
   /// The library file prefix for this target ('lib' or '').
   String get libraryPrefix {

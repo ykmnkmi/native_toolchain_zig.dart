@@ -16,7 +16,6 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(lib);
 
-    // Unit tests
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/lib.zig"),
