@@ -70,6 +70,82 @@ pub fn build(b: *std.Build) void {
 }
 ```
 
+<details>
+<summary><strong>Alternative: Build both static and dynamic libraries</strong></summary>
+
+To produce both library types in a single build:
+
+```zig
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const root_module = b.createModule(.{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Dynamic library (.so, .dylib, .dll)
+    const dynamic_lib = b.addLibrary(.{
+        .name = "my_package",
+        .linkage = .dynamic,
+        .root_module = root_module,
+    });
+
+    b.installArtifact(dynamic_lib);
+
+    // Static library (.a, .lib)
+    const static_lib = b.addLibrary(.{
+        .name = "my_package",
+        .linkage = .static,
+        .root_module = root_module,
+    });
+
+    b.installArtifact(static_lib);
+}
+```
+
+</details>
+
+<details>
+<summary><strong>Alternative: Select linkage via command line</strong></summary>
+
+To control linkage type via `-Dlinkage=static` or `-Dlinkage=dynamic`:
+
+```zig
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const linkage = b.option(
+        std.builtin.LinkMode,
+        "linkage",
+        "Library linkage type",
+    ) orelse .dynamic;
+
+    const lib = b.addLibrary(.{
+        .name = "my_package",
+        .linkage = linkage,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    b.installArtifact(lib);
+}
+```
+
+Build with: `zig build -Dlinkage=static` or `zig build -Dlinkage=dynamic`
+
+</details>
+
 4. Create `zig/build.zig.zon`:
 ```zig
 .{

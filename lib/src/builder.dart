@@ -12,63 +12,6 @@ import 'utils.dart' as utils;
 ///
 /// Integrates with Dart's build hooks to automatically compile Zig code
 /// when building your Dart/Flutter application.
-///
-/// ## Example
-///
-/// ```dart
-/// // hook/build.dart
-/// import 'package:hooks/hooks.dart';
-/// import 'package:native_toolchain_zig/native_toolchain_zig.dart';
-///
-/// Future<void> main(List<String> arguments) async {
-///   await build(arguments, (input, output) async {
-///     await ZigBuilder(
-///       assetName: 'my_package.dart',
-///       zigDir: 'zig',
-///     ).run(input: input, output: output);
-///   });
-/// }
-/// ```
-///
-/// ## Project Structure
-///
-/// ```
-/// my_package/
-/// ├── hook/
-/// │   └── build.dart
-/// ├── lib/
-/// │   └── my_package.dart
-/// └── zig/
-///     ├── src/
-///     │   └── lib.zig
-///     ├── build.zig
-///     └── build.zig.zon  (optional)
-/// ```
-///
-/// ## Zig 0.15.0+ Build System
-///
-/// This builder expects a `build.zig` compatible with Zig 0.15.0+:
-///
-/// ```zig
-/// const std = @import("std");
-///
-/// pub fn build(b: *std.Build) void {
-///     const target = b.standardTargetOptions(.{});
-///     const optimize = b.standardOptimizeOption(.{});
-///
-///     const lib = b.addLibrary(.{
-///         .name = "my_lib",
-///         .linkage = .dynamic,
-///         .root_module = b.createModule(.{
-///             .root_source_file = b.path("src/lib.zig"),
-///             .target = target,
-///             .optimize = optimize,
-///         }),
-///     });
-///
-///     b.installArtifact(lib);
-/// }
-/// ```
 class ZigBuilder implements Builder {
   /// Creates a [ZigBuilder].
   ///
@@ -104,6 +47,15 @@ class ZigBuilder implements Builder {
   final Optimization optimization;
 
   /// Additional arguments to pass to `zig build`.
+  ///
+  /// Use this to pass custom options to your build.zig, for example:
+  /// ```dart
+  /// ZigBuilder(
+  ///   assetName: 'my_package.dart',
+  ///   zigDir: 'zig/',
+  ///   extraArguments: ['-Dlinkage=static'],
+  /// )
+  /// ```
   final List<String> extraArguments;
 
   /// Runs the Zig build process.
@@ -258,8 +210,8 @@ extension on CodeConfig {
     return switch (linkModePreference) {
       LinkModePreference.dynamic ||
       LinkModePreference.preferDynamic => DynamicLoadingBundled(),
-      LinkModePreference.static || LinkModePreference.preferStatic =>
-        throw UnimplementedError('LinkModePreference: $linkModePreference'),
+      LinkModePreference.static ||
+      LinkModePreference.preferStatic => StaticLinking(),
       _ => throw UnsupportedError('LinkModePreference: $linkModePreference'),
     };
   }
