@@ -1,6 +1,3 @@
-/// Zig math library bindings.
-library;
-
 import 'dart:ffi';
 
 @Native<Int32 Function(Int32, Int32)>()
