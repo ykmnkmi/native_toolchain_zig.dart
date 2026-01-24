@@ -9,9 +9,9 @@ void main() {
   print('  factorial(10)     = ${factorial(10)}');
   print('  fibonacci(20)     = ${fibonacci(20)}');
   print('  gcd(48, 18)       = ${gcd(48, 18)}');
-  print('  power(2, 10)      = ${power(2.0, 10).toInt()}');
-  print('  sqrt(144)         = ${sqrt(144.0).toInt()}');
+  print('  power(2, 10)      = ${power(2.0, 10)}');
+  print('  sqrt(144)         = ${sqrt(144.0)}');
   print('  absInt(-42)       = ${absInt(-42)}');
   print('  absFloat(-3.14)   = ${absFloat(-3.14)}');
-  print('  clamp(15, 0, 10)  = ${clamp(15.0, 0.0, 10.0).toInt()}');
+  print('  clamp(15, 0, 10)  = ${clamp(15.0, 0.0, 10.0)}');
 }

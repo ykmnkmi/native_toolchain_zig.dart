@@ -63,6 +63,8 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/lib.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
+            .pic = true,
         }),
     });
 
@@ -71,7 +73,7 @@ pub fn build(b: *std.Build) void {
 ```
 
 <details>
-<summary><strong>Alternative: Build both static and dynamic libraries</strong></summary>
+<summary><strong>Build both static and dynamic libraries</strong></summary>
 
 To produce both library types in a single build:
 
@@ -86,6 +88,8 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
+        .pic = true,
     });
 
     // Dynamic library (.so, .dylib, .dll)
@@ -111,7 +115,7 @@ pub fn build(b: *std.Build) void {
 </details>
 
 <details>
-<summary><strong>Alternative: Select linkage via command line</strong></summary>
+<summary><strong>Select linkage via command line</strong></summary>
 
 To control linkage type via `-Dlinkage=static` or `-Dlinkage=dynamic`:
 
@@ -135,6 +139,8 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/lib.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
+            .pic = true,
         }),
     });
 
