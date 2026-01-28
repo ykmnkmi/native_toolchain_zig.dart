@@ -40,13 +40,13 @@ const Worker = struct {
 
     fn getSendPort(self: *Worker) Dart_Handle {
         if (self.send_port != Illegal_Port) {
-            return c.Dart_Null();
+            return c.Dart_Null_DL.?();
         }
 
         const port = c.Dart_NewNativePort_DL.?("ZigWorker", &handleMessage, true);
 
         if (port == Illegal_Port) {
-            return c.Dart_Null();
+            return c.Dart_Null_DL.?();
         }
 
         self.send_port = port;
@@ -55,24 +55,16 @@ const Worker = struct {
 
     fn close(self: *Worker) bool {
         if (self.send_port != Illegal_Port) {
-            if (c.Dart_CloseNativePort_DL) |CloseNativePort_DL| {
-                const closed = CloseNativePort_DL(self.send_port);
-                self.send_port = Illegal_Port;
-                return closed;
-            }
-
-            return false;
+            const closed = c.Dart_CloseNativePort_DL.?(self.send_port);
+            self.send_port = Illegal_Port;
+            return closed;
         }
 
         return true;
     }
 
     fn postToDart(self: *Worker, obj: *Dart_CObject) bool {
-        if (c.Dart_PostCObject_DL) |PostCObject_DL| {
-            return PostCObject_DL(self.receiver_port, obj);
-        }
-
-        return false;
+        return c.Dart_PostCObject_DL.?(self.receiver_port, obj);
     }
 };
 
