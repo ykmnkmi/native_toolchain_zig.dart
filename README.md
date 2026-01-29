@@ -1,7 +1,7 @@
 # 🔧 native_toolchain_zig
 
 [![Pub Version][pub_badge]][pub_link]
-[![Build Status][build_badge]][build_link]
+[![Dart CI][dart_ci]][dart_ci_link]
 [![License: MIT][license_badge]][license_link]
 
 Zig support for Dart's [build hooks][dart_hooks].
@@ -193,8 +193,8 @@ MIT License - see [LICENSE](LICENSE) for details.
 <!-- Badges -->
 [pub_badge]: https://img.shields.io/pub/v/native_toolchain_zig
 [pub_link]: https://pub.dev/packages/native_toolchain_zig
-[build_badge]: https://github.com/example/native_toolchain_zig/actions/workflows/ci.yml/badge.svg
-[build_link]: https://github.com/example/native_toolchain_zig/actions
+[dart_ci]: https://github.com/ykmnkmi/native_toolchain_zig.dart/actions/workflows/ci.yaml/badge.svg
+[dart_ci_link]: https://github.com/ykmnkmi/native_toolchain_zig.dart/actions
 [license_badge]: https://img.shields.io/badge/license-MIT-purple.svg
 [license_link]: https://opensource.org/licenses/MIT
 
