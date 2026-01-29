@@ -7,6 +7,11 @@
 Zig support for Dart's [build hooks][dart_hooks].
 Automatically builds and bundles your Zig code with your Dart/Flutter application.
 
+> [!NOTE]
+> If you want to use `ffigen` to auto-generate Dart bindings, you'll need to
+> manually write a C header file. Automatic header generation from Zig is
+> currently blocked by ziglang/zig#9698.
+
 ### Prerequisites
 
 Install [Zig 0.15.0+][zig_download] on your development machine.
