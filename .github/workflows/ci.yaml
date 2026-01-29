@@ -2,30 +2,42 @@ name: Dart CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
+    paths:
+      - ".github/workflows/dart.yml"
+      - "lib/**"
+      - "test/**"
+      - "analysis_options.yaml"
+      - "pubspec.yaml"
   pull_request:
-    branches: [ main ]
+    branches: [main]
+    paths:
+      - ".github/workflows/dart.yml"
+      - "lib/**"
+      - "test/**"
+      - "analysis_options.yaml"
+      - "pubspec.yaml"
 
 jobs:
   test:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Setup Dart
-      uses: dart-lang/setup-dart@v1
-      with:
-        sdk: stable
+      - name: Setup Dart
+        uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
 
-    - name: Install dependencies
-      run: dart pub get
+      - name: Install dependencies
+        run: dart pub get
 
-    - name: Verify formatting
-      run: dart format --output=none --set-exit-if-changed .
+      - name: Verify formatting
+        run: dart format --output=none --set-exit-if-changed .
 
-    - name: Analyze project
-      run: dart analyze --fatal-infos
+      - name: Analyze project
+        run: dart analyze --fatal-infos
 
-    - name: Run tests
-      run: dart test -P ci
+      - name: Run tests
+        run: dart test -P ci
