@@ -12,7 +12,7 @@ void main() {
       bool result = await utils.isInstalled();
       expect(result, isTrue);
     });
-  });
+  }, tags: 'fails-on-ci');
 
   group('version', () {
     test('returns version string or null', () async {

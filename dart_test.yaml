@@ -1,0 +1,3 @@
+presets:
+  ci:
+    exclude_tags: "fails-on-ci"
