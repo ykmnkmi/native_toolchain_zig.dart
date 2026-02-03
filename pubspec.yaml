@@ -12,6 +12,7 @@ environment:
 workspace:
   - example/zig_math
   - example/zig_dart_api
+  - example/zig_tcp
 
 topics:
   - zig
