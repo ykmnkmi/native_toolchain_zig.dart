@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:code_assets/code_assets.dart';
 import 'package:hooks/hooks.dart';
 import 'package:logging/logging.dart';
+import 'package:native_toolchain_zig/src/code_config_mapping.dart';
 import 'package:path/path.dart' as path;
 
 import 'target.dart';
@@ -27,8 +28,6 @@ class ZigBuilder implements Builder {
   /// The asset name for the compiled library.
   ///
   /// This should correspond to the Dart file containing `@Native` annotations.
-  /// For example, `'my_package.dart'` creates an asset with ID
-  /// `package:my_package/my_package.dart`.
   final String assetName;
 
   /// Path to the Zig project directory relative to package root.
@@ -100,10 +99,8 @@ class ZigBuilder implements Builder {
       );
     }
 
-    Architecture targetArch = input.config.code.targetArchitecture;
-    OS targetOS = input.config.code.targetOS;
     LinkMode linkMode = input.config.code.linkMode;
-    Target target = Target.from(targetArch, targetOS, linkMode);
+    Target target = Target.fromBuildConfig(input.config);
 
     logger.info('Building for ${target.triple} ($optimization).');
 
@@ -203,16 +200,4 @@ Future<Uri> _locateLibrary(Uri outputDir, String libName, Target target) async {
         'Built library not found. Searched:\n$paths\n'
         'Verify library name matches build.zig.',
   );
-}
-
-extension on CodeConfig {
-  LinkMode get linkMode {
-    return switch (linkModePreference) {
-      LinkModePreference.dynamic ||
-      LinkModePreference.preferDynamic => DynamicLoadingBundled(),
-      LinkModePreference.static ||
-      LinkModePreference.preferStatic => StaticLinking(),
-      _ => throw UnsupportedError('LinkModePreference: $linkModePreference'),
-    };
-  }
 }

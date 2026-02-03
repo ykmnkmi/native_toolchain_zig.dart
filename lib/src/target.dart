@@ -1,4 +1,6 @@
 import 'package:code_assets/code_assets.dart';
+import 'package:hooks/hooks.dart';
+import 'package:native_toolchain_zig/src/code_config_mapping.dart';
 
 /// Zig build optimization levels.
 enum Optimization {
@@ -23,12 +25,24 @@ enum Optimization {
 ///
 /// Maps between Dart's [OS]/[Architecture] and Zig's target triple format.
 final class Target {
+  /// Creates a [Target] from Dart's [BuildConfig].
+  ///
+  /// Throws [UnsupportedError] if the platform is not supported.
+  factory Target.fromBuildConfig(BuildConfig buildConfig) {
+    var (archStr, osStr, abiStr) = buildConfig.code.targetTriple;
+    return Target(
+      arch: archStr,
+      os: osStr,
+      abi: abiStr,
+      linkMode: buildConfig.code.linkMode,
+    );
+  }
+
   /// Creates a [Target] from Dart's [OS] and [Architecture].
   ///
   /// Throws [UnsupportedError] if the platform is not supported.
   factory Target.from(Architecture arch, OS os, LinkMode linkMode) {
-    String archStr = _mapArch(arch);
-    var (String osStr, String? abiStr) = _mapOS(os);
+    var (archStr, osStr, abiStr) = mapOsAndArch(os, arch);
     return Target(arch: archStr, os: osStr, abi: abiStr, linkMode: linkMode);
   }
 
@@ -40,13 +54,13 @@ final class Target {
     required this.linkMode,
   });
 
-  /// The architecture (e.g., 'x86_64', 'aarch64').
+  /// The architecture (e.g., 'aarch64', 'x86_64').
   final String arch;
 
   /// The operating system (e.g., 'linux', 'macos', 'windows').
   final String os;
 
-  /// The ABI (e.g., 'gnu', 'musl', 'android'). May be null.
+  /// The ABI (e.g., 'android', 'gnu', 'musl'). May be null.
   final String? abi;
 
   final LinkMode linkMode;
@@ -81,30 +95,6 @@ final class Target {
       'windows' => '$name.dll',
       'macos' || 'ios' => 'lib$name.dylib',
       _ => 'lib$name.so',
-    };
-  }
-
-  static String _mapArch(Architecture arch) {
-    return switch (arch) {
-      Architecture.arm => 'arm',
-      Architecture.arm64 => 'aarch64',
-      Architecture.ia32 => 'x86',
-      Architecture.riscv32 => 'riscv32',
-      Architecture.riscv64 => 'riscv64',
-      Architecture.x64 => 'x86_64',
-      _ => throw UnsupportedError('Unsupported architecture: $arch'),
-    };
-  }
-
-  static (String os, String? abi) _mapOS(OS os) {
-    return switch (os) {
-      OS.android => ('linux', 'android'),
-      OS.fuchsia => ('fuchsia', null),
-      OS.iOS => ('ios', null),
-      OS.linux => ('linux', 'gnu'),
-      OS.macOS => ('macos', null),
-      OS.windows => ('windows', 'gnu'),
-      _ => throw UnsupportedError('Unsupported OS: $os'),
     };
   }
 }

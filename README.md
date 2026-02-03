@@ -23,7 +23,7 @@ dart pub add hooks native_toolchain_zig
 
 ### Project Setup
 
-1. Create your Zig project in `zig/`:
+1. Create your Zig project in `my_project/zig/`:
 ```
 my_package/
 ├── hook/
