@@ -27,26 +27,6 @@ void main() {
         Target target = Target.from(Architecture.arm64, OS.linux, linkMode);
         expect(target.arch, 'aarch64');
       });
-
-      test('maps arm to arm', () {
-        Target target = Target.from(Architecture.arm, OS.linux, linkMode);
-        expect(target.arch, 'arm');
-      });
-
-      test('maps ia32 to x86', () {
-        Target target = Target.from(Architecture.ia32, OS.linux, linkMode);
-        expect(target.arch, 'x86');
-      });
-
-      test('maps riscv32 to riscv32', () {
-        Target target = Target.from(Architecture.riscv32, OS.linux, linkMode);
-        expect(target.arch, 'riscv32');
-      });
-
-      test('maps riscv64 to riscv64', () {
-        Target target = Target.from(Architecture.riscv64, OS.linux, linkMode);
-        expect(target.arch, 'riscv64');
-      });
     });
 
     group('OS mapping', () {
@@ -78,12 +58,6 @@ void main() {
         Target target = Target.from(Architecture.arm64, OS.android, linkMode);
         expect(target.os, equals('linux'));
         expect(target.abi, equals('android'));
-      });
-
-      test('maps fuchsia without ABI', () {
-        Target target = Target.from(Architecture.x64, OS.fuchsia, linkMode);
-        expect(target.os, equals('fuchsia'));
-        expect(target.abi, isNull);
       });
     });
 

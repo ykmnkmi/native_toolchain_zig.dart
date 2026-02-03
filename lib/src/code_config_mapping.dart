@@ -13,12 +13,12 @@ extension CodeConfigMapping on CodeConfig {
     };
   }
 
-  (String, String, String) get targetTriple {
+  (String, String, String?) get targetTriple {
     return mapOsAndArch(targetOS, targetArchitecture, iOS.targetSdk);
   }
 }
 
-(String, String, String) mapOsAndArch(
+(String, String, String?) mapOsAndArch(
   OS os,
   Architecture arch, [
   IOSSdk? iOSTarget,
@@ -31,7 +31,7 @@ extension CodeConfigMapping on CodeConfig {
 
     // iOS
     (OS.iOS, Architecture.arm64) => switch (iOSTarget) {
-      IOSSdk.iPhoneOS || null => ('aarch64', 'ios', 'none'),
+      IOSSdk.iPhoneOS || null => ('aarch64', 'ios', null),
       IOSSdk.iPhoneSimulator => ('aarch64', 'ios', 'simulator'),
       _ => throw UnsupportedError('Unknown IOSSdk: $iOSTarget'),
     },
@@ -46,8 +46,8 @@ extension CodeConfigMapping on CodeConfig {
     (OS.linux, Architecture.x64) => ('x86_64', 'linux', 'gnu'),
 
     // macOS
-    (OS.macOS, Architecture.arm64) => ('aarch64', 'macos', 'none'),
-    (OS.macOS, Architecture.x64) => ('x86_64', 'macos', 'none'),
+    (OS.macOS, Architecture.arm64) => ('aarch64', 'macos', null),
+    (OS.macOS, Architecture.x64) => ('x86_64', 'macos', null),
 
     (_, _) => throw UnsupportedError('Unsupported target: $os on $arch.'),
   };
