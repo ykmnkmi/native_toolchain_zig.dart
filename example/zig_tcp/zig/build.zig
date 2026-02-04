@@ -4,10 +4,10 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const xev_dep = b.dependency("xev", .{
-        .target = target,
-        .optimize = optimize,
-    });
+    // const xev_dep = b.dependency("xev", .{
+    //     .target = target,
+    //     .optimize = optimize,
+    // });
 
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/lib.zig"),
@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
         .pic = true,
     });
 
-    root_module.addImport("xev", xev_dep.module("xev"));
+    // root_module.addImport("xev", xev_dep.module("xev"));
 
     root_module.addIncludePath(b.path("include"));
 
@@ -26,10 +26,10 @@ pub fn build(b: *std.Build) void {
         .flags = &.{"-fPIC"},
     });
 
-    if (target.result.os.tag == .windows) {
-        root_module.linkSystemLibrary("ws2_32");
-        root_module.linkSystemLibrary("mswsock");
-    }
+    // if (target.result.os.tag == .windows) {
+    //     root_module.linkSystemLibrary("ws2_32");
+    //     root_module.linkSystemLibrary("mswsock");
+    // }
 
     const dynamic_lib = b.addLibrary(.{
         .name = "zig_net",

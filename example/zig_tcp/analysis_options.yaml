@@ -4,3 +4,6 @@ analyzer:
   errors:
     avoid_print: ignore
     non_constant_identifier_names: ignore
+
+formatter:
+  page_width: 120
