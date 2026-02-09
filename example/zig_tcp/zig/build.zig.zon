@@ -1,13 +1,12 @@
 .{
     .name = .zig_tcp,
     .version = "0.1.0",
-    .fingerprint = 0xfde33f4ff461d64,
     .minimum_zig_version = "0.15.0",
     .dependencies = .{
-        // .xev = .{
-        //     .url = "https://github.com/Cloudef/zig-libxev/archive/refs/tags/v0.15.2.tar.gz",
-        //     .hash = "zig fetch --save url",
-        // },
+        .libxev = .{
+            .url = "https://github.com/mitchellh/libxev/archive/main.tar.gz",
+            .hash = "12208070233b17de6be05e32af096a6760682b48598323234824def41789e993432c",
+        },
     },
     .paths = .{
         "include",
