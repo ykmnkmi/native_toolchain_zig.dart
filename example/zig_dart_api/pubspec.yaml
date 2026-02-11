@@ -5,14 +5,14 @@ version: 0.1.0
 publish_to: none
 
 environment:
-  sdk: ^3.9.0
+  sdk: ^3.10.8
 
 resolution: workspace
 
 dependencies:
-  hooks: ^1.0.0
+  hooks: ^1.0.1
   logging: ^1.3.0
   native_toolchain_zig: ^0.1.0
 
 dev_dependencies:
-  lints: ^6.0.0
+  lints: ^6.1.0
