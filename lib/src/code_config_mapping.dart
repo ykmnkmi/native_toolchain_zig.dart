@@ -14,7 +14,11 @@ extension CodeConfigMapping on CodeConfig {
   }
 
   (String, String, String?) get targetTriple {
-    return mapOsAndArch(targetOS, targetArchitecture, iOS.targetSdk);
+    return mapOsAndArch(
+      targetOS,
+      targetArchitecture,
+      targetOS == OS.iOS ? iOS.targetSdk : null,
+    );
   }
 }
 
