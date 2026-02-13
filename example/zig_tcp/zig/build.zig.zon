@@ -2,12 +2,7 @@
     .name = .zig_tcp,
     .version = "0.1.0",
     .minimum_zig_version = "0.15.0",
-    .dependencies = .{
-        .libxev = .{
-            .url = "https://github.com/mitchellh/libxev/archive/main.tar.gz",
-            .hash = "12208070233b17de6be05e32af096a6760682b48598323234824def41789e993432c",
-        },
-    },
+    .fingerprint = 0xfde33f42744e005,
     .paths = .{
         "include",
         "src",
