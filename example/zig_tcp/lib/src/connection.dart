@@ -154,47 +154,47 @@ abstract interface class Connection {
 }
 
 final class _Connection implements Connection {
-  _Connection(this._handle, this.service);
+  _Connection(this.handle, this.service);
 
-  final int _handle;
+  final int handle;
 
   final _IOService service;
 
   @override
-  late final InternetAddress address = _getLocalAddress(_handle);
+  late final InternetAddress address = _getLocalAddress(handle);
 
   @override
-  late final int port = _getLocalPort(_handle);
+  late final int port = _getLocalPort(handle);
 
   @override
-  late final InternetAddress remoteAddress = _getRemoteAddress(_handle);
+  late final InternetAddress remoteAddress = _getRemoteAddress(handle);
 
   @override
-  late final int remotePort = _getRemotePort(_handle);
+  late final int remotePort = _getRemotePort(handle);
 
   @override
   bool get keepAlive {
-    var result = tcp_get_keep_alive(_handle);
-    SocketException.fromCode(result);
+    var result = tcp_get_keep_alive(handle);
+    SocketException.checkResult(result);
     return result != 0;
   }
 
   @override
   set keepAlive(bool enabled) {
-    var code = tcp_set_keep_alive(_handle, enabled);
-    SocketException.fromCode(code);
+    var code = tcp_set_keep_alive(handle, enabled);
+    SocketException.checkResult(code);
   }
 
   @override
   bool get noDelay {
-    var result = tcp_get_no_delay(_handle);
+    var result = tcp_get_no_delay(handle);
     SocketException.checkResult(result);
     return result != 0;
   }
 
   @override
   set noDelay(bool enabled) {
-    var code = tcp_set_no_delay(_handle, enabled);
+    var code = tcp_set_no_delay(handle, enabled);
     SocketException.checkResult(code);
   }
 
@@ -202,7 +202,7 @@ final class _Connection implements Connection {
   Future<Uint8List?> read() async {
     try {
       var result = await service.request((id) {
-        var code = tcp_read(id, _handle);
+        var code = tcp_read(id, handle);
         SocketException.checkResult(code);
       });
 
@@ -224,7 +224,7 @@ final class _Connection implements Connection {
           pointer[i] = data[i];
         }
 
-        var code = tcp_write(id, _handle, pointer, offset, length);
+        var code = tcp_write(id, handle, pointer, offset, length);
         SocketException.checkResult(code);
       } finally {
         // Safe to free - tcp_write copies the data immediately.
@@ -238,7 +238,7 @@ final class _Connection implements Connection {
   @override
   Future<void> closeWrite() async {
     await service.request((id) {
-      var code = tcp_close_write(id, _handle);
+      var code = tcp_close_write(id, handle);
       SocketException.checkResult(code);
     });
   }
@@ -246,7 +246,7 @@ final class _Connection implements Connection {
   @override
   Future<void> close() async {
     await service.request((id) {
-      var code = tcp_close(id, _handle);
+      var code = tcp_close(id, handle);
       SocketException.checkResult(code);
     });
   }

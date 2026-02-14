@@ -115,34 +115,33 @@ abstract interface class Listener {
 }
 
 final class _Listener implements Listener {
-  _Listener(this._handle, this._service);
+  _Listener(this.handle, this.service);
 
-  final int _handle;
+  final int handle;
 
-  final _IOService _service;
+  final _IOService service;
+
+  @override
+  late final InternetAddress address = _getLocalAddress(handle);
+
+  @override
+  late final int port = _getLocalPort(handle);
 
   @override
   Future<Connection> accept() async {
-    var result = await _service.request((id) {
-      var code = tcp_accept(id, _handle);
+    var result = await service.request((id) {
+      var code = tcp_accept(id, handle);
       SocketException.checkResult(code);
     });
 
-    return _Connection(result as int, _service);
+    return _Connection(result as int, service);
   }
 
   @override
   Future<void> close({bool force = false}) async {
-    await _service.request((id) {
-      if (tcp_listener_close(id, _handle, force) < 0) {
-        throw SocketException.fromCode(tcp_listener_close(id, _handle, force));
-      }
+    await service.request((id) {
+      var code = tcp_listener_close(id, handle, force);
+      SocketException.checkResult(code);
     });
   }
-
-  @override
-  late final InternetAddress address = _getLocalAddress(_handle);
-
-  @override
-  late final int port = _getLocalPort(_handle);
 }
