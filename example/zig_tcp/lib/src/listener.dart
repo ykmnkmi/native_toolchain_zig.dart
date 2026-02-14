@@ -90,7 +90,7 @@ abstract interface class Listener {
 
       try {
         for (var i = 0; i < length; i++) {
-          pointer[i] = rawAddress[0];
+          pointer[i] = rawAddress[i];
         }
 
         var code = tcp_listen(
