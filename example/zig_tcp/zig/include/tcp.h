@@ -9,6 +9,24 @@
 extern "C" {
 #endif
 
+/*
+ * On Windows, DLL symbols are hidden by default — the opposite of Linux/macOS
+ * where shared library symbols are visible unless explicitly hidden. We need
+ * __declspec(dllexport) on every public function so the linker adds them to
+ * the DLL's export table. Without this, Dart's FFI @Native resolver fails
+ * with "symbol not found" even though the function exists in the binary.
+ *
+ * On non-Windows platforms, TCP_EXPORT expands to nothing since symbols are
+ * already visible by default. You could optionally use
+ * __attribute__((visibility("default"))) here if building with
+ * -fvisibility=hidden, but that's not the default for Zig's C compilation.
+ */
+#ifdef _WIN32
+    #define TCP_EXPORT __declspec(dllexport)
+#else
+    #define TCP_EXPORT
+#endif
+
 /* =============================================================================
  * Initialization
  * =============================================================================
@@ -23,13 +41,13 @@ extern "C" {
  *
  * @param dart_api_dl Pointer to Dart API DL structure
  */
-void tcp_init(void* dart_api_dl);
+TCP_EXPORT void tcp_init(void* dart_api_dl);
 
 /**
  * Shut down the library: stops the event loop thread, closes all sockets,
  * and frees all resources. Must be called before process exit.
  */
-void tcp_destroy(void);
+TCP_EXPORT void tcp_destroy(void);
 
 /* =============================================================================
  * Connection Operations
@@ -62,7 +80,7 @@ void tcp_destroy(void);
  * @param source_port Source port (0 for any)
  * @return 0 on successful queue, negative error code on immediate failure
  */
-int64_t tcp_connect(
+TCP_EXPORT int64_t tcp_connect(
     int64_t send_port,
     int64_t request_id,
     const uint8_t* addr,
@@ -84,7 +102,7 @@ int64_t tcp_connect(
  * @param handle Connection handle
  * @return 0 on successful queue, negative error code on immediate failure
  */
-int64_t tcp_read(int64_t request_id, int64_t handle);
+TCP_EXPORT int64_t tcp_read(int64_t request_id, int64_t handle);
 
 /**
  * Asynchronously write data to a connection.
@@ -100,7 +118,7 @@ int64_t tcp_read(int64_t request_id, int64_t handle);
  * @param count Number of bytes to write
  * @return 0 on successful queue, negative error code on immediate failure
  */
-int64_t tcp_write(
+TCP_EXPORT int64_t tcp_write(
     int64_t request_id,
     int64_t handle,
     const uint8_t* data,
@@ -115,7 +133,7 @@ int64_t tcp_write(
  * @param handle Connection handle
  * @return 0 on successful queue, negative error code on immediate failure
  */
-int64_t tcp_close_write(int64_t request_id, int64_t handle);
+TCP_EXPORT int64_t tcp_close_write(int64_t request_id, int64_t handle);
 
 /**
  * Asynchronously close a connection.
@@ -124,7 +142,7 @@ int64_t tcp_close_write(int64_t request_id, int64_t handle);
  * @param handle Connection handle
  * @return 0 on successful queue, negative error code on immediate failure
  */
-int64_t tcp_close(int64_t request_id, int64_t handle);
+TCP_EXPORT int64_t tcp_close(int64_t request_id, int64_t handle);
 
 /* =============================================================================
  * Listener Operations
@@ -144,7 +162,7 @@ int64_t tcp_close(int64_t request_id, int64_t handle);
  * @param shared Allow address reuse (SO_REUSEADDR + SO_REUSEPORT)
  * @return 0 on successful queue, negative error code on immediate failure
  */
-int64_t tcp_listen(
+TCP_EXPORT int64_t tcp_listen(
     int64_t send_port,
     int64_t request_id,
     const uint8_t* addr,
@@ -165,7 +183,7 @@ int64_t tcp_listen(
  * @param listener_handle Listener handle
  * @return 0 on successful queue, negative error code on immediate failure
  */
-int64_t tcp_accept(int64_t request_id, int64_t listener_handle);
+TCP_EXPORT int64_t tcp_accept(int64_t request_id, int64_t listener_handle);
 
 /**
  * Asynchronously close a listener.
@@ -175,7 +193,7 @@ int64_t tcp_accept(int64_t request_id, int64_t listener_handle);
  * @param force If true, close active connections immediately
  * @return 0 on successful queue, negative error code on immediate failure
  */
-int64_t tcp_listener_close(
+TCP_EXPORT int64_t tcp_listener_close(
     int64_t request_id,
     int64_t listener_handle,
     bool force
@@ -197,7 +215,7 @@ int64_t tcp_listener_close(
  * @param out_addr Buffer to write address bytes (must be at least 16 bytes)
  * @return Address length (4 for IPv4, 16 for IPv6), or negative error code
  */
-int64_t tcp_get_local_address(int64_t handle, uint8_t* out_addr);
+TCP_EXPORT int64_t tcp_get_local_address(int64_t handle, uint8_t* out_addr);
 
 /**
  * Get local port of a connection or listener.
@@ -205,7 +223,7 @@ int64_t tcp_get_local_address(int64_t handle, uint8_t* out_addr);
  * @param handle Connection or listener handle
  * @return Port number (positive), or negative error code
  */
-int64_t tcp_get_local_port(int64_t handle);
+TCP_EXPORT int64_t tcp_get_local_port(int64_t handle);
 
 /**
  * Get remote address of a connection.
@@ -214,7 +232,7 @@ int64_t tcp_get_local_port(int64_t handle);
  * @param out_addr Buffer to write address bytes (must be at least 16 bytes)
  * @return Address length (4 for IPv4, 16 for IPv6), or negative error code
  */
-int64_t tcp_get_remote_address(int64_t handle, uint8_t* out_addr);
+TCP_EXPORT int64_t tcp_get_remote_address(int64_t handle, uint8_t* out_addr);
 
 /**
  * Get remote port of a connection.
@@ -222,7 +240,7 @@ int64_t tcp_get_remote_address(int64_t handle, uint8_t* out_addr);
  * @param handle Connection handle
  * @return Port number (positive), or negative error code
  */
-int64_t tcp_get_remote_port(int64_t handle);
+TCP_EXPORT int64_t tcp_get_remote_port(int64_t handle);
 
 /**
  * Get TCP keep-alive setting.
@@ -230,7 +248,7 @@ int64_t tcp_get_remote_port(int64_t handle);
  * @param handle Connection handle
  * @return 1 if enabled, 0 if disabled, negative error code on failure
  */
-int64_t tcp_get_keep_alive(int64_t handle);
+TCP_EXPORT int64_t tcp_get_keep_alive(int64_t handle);
 
 /**
  * Set TCP keep-alive.
@@ -239,7 +257,7 @@ int64_t tcp_get_keep_alive(int64_t handle);
  * @param enabled 1 to enable, 0 to disable
  * @return 0 on success, negative error code on failure
  */
-int64_t tcp_set_keep_alive(int64_t handle, bool enabled);
+TCP_EXPORT int64_t tcp_set_keep_alive(int64_t handle, bool enabled);
 
 /**
  * Get TCP_NODELAY setting (Nagle's algorithm).
@@ -247,7 +265,7 @@ int64_t tcp_set_keep_alive(int64_t handle, bool enabled);
  * @param handle Connection handle
  * @return 1 if no-delay enabled, 0 if disabled, negative error code on failure
  */
-int64_t tcp_get_no_delay(int64_t handle);
+TCP_EXPORT int64_t tcp_get_no_delay(int64_t handle);
 
 /**
  * Set TCP_NODELAY (disable Nagle's algorithm).
@@ -256,7 +274,7 @@ int64_t tcp_get_no_delay(int64_t handle);
  * @param enabled 1 to enable no-delay, 0 to disable
  * @return 0 on success, negative error code on failure
  */
-int64_t tcp_set_no_delay(int64_t handle, bool enabled);
+TCP_EXPORT int64_t tcp_set_no_delay(int64_t handle, bool enabled);
 
 /* =============================================================================
  * Error Codes
