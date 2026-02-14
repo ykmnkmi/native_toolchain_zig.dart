@@ -17,9 +17,6 @@ final class _IOService {
   /// access.
   static final _IOService instance = _IOService();
 
-  static const int nextMax = 0x7FFFFFFF;
-
-  @protected
   _IOService()
     : receivePort = RawReceivePort(null, 'TCP IO Service'),
       pending = HashMap<int, Completer<Object?>>(),
@@ -48,14 +45,14 @@ final class _IOService {
 
   /// Allocate a request ID that isn't currently in use.
   ///
-  /// IDs wrap around at [nextMax]. In the unlikely event of a collision
+  /// IDs wrap around at `0x7FFFFFFF`. In the unlikely event of a collision
   /// with a still-pending request (would require ~2 billion concurrent
   /// in-flight operations), we skip forward until we find a free slot.
   int allocate() {
     int id;
 
     do {
-      if (next == nextMax) {
+      if (next == 0x7FFFFFFF) {
         next = 0;
       }
 

@@ -9,7 +9,6 @@ import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
-import 'package:meta/meta.dart';
 
 import 'src/ffi.dart';
 
