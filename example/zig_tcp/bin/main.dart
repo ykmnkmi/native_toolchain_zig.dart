@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:zig_tcp/zig_tcp.dart';
@@ -8,14 +9,21 @@ Future<void> main() async {
   var port = listener.port;
   print('Listening on $address:$port...');
 
-  // var connection = await listener.accept();
-  // var data = await connection.read();
+  while (true) {
+    var connection = await listener.accept();
+    var data = await connection.read();
 
-  // if (data != null) {
-  //   print('Received ${utf8.decode(data)}');
-  // }
+    if (data == null) {
+      await connection.write(utf8.encode('Hello!\n'));
+      await connection.close();
+      break;
+    }
 
-  // await connection.write(utf8.encode('Hello!'));
-  // await connection.close();
+    var message = utf8.decode(data);
+    print('> $message');
+    await connection.write(utf8.encode('$message\n'));
+    await connection.close();
+  }
+
   await listener.close();
 }
