@@ -7,11 +7,12 @@ repository: https://github.com/ykmnkmi/native_toolchain_zig.dart
 issue_tracker: https://github.com/ykmnkmi/native_toolchain_zig.dart/issues
 
 environment:
-  sdk: ^3.10.8
+  sdk: ^3.11.0
 
 workspace:
   - example/zig_math
   - example/zig_dart_api
+  - example/zig_tcp
 
 topics:
   - zig
@@ -27,6 +28,6 @@ dependencies:
   path: ^1.9.1
 
 dev_dependencies:
-  ffi: ^2.1.5
+  ffi: ^2.2.0
   lints: ^6.1.0
   test: ^1.29.0
