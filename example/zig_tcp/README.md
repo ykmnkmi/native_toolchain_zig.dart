@@ -2,115 +2,76 @@
 
 # zig_tcp
 
-A cross-platform TCP socket library for Dart, implemented in C and compiled
-through Zig's build system. It provides asynchronous I/O via a dedicated
-background event loop that posts results to Dart through native ports, with
-support for multiple concurrent isolates.
+Cross-platform TCP sockets for Dart. Native C backend compiled via Zig,
+async I/O through a background event loop, multi-isolate support.
+
+## Usage
+
+```dart
+import 'dart:convert';
+import 'dart:io';
+import 'package:zig_tcp/zig_tcp.dart';
+
+// Server
+var listener = await Listener.bind(InternetAddress.loopbackIPv4, 8080);
+print('Listening on ${listener.address.address}:${listener.port}');
+
+var connection = await listener.accept();
+var data = await connection.read(); // Uint8List? — null on EOF
+
+if (data != null) {
+  print(utf8.decode(data));
+  await connection.write(utf8.encode('echo\n'));
+}
+
+await connection.close();
+await listener.close();
+
+// Client
+var conn = await Connection.connect(InternetAddress.loopbackIPv4, 8080);
+await conn.write(utf8.encode('hello'));
+var response = await conn.read();
+await conn.close();
+
+// Multi-isolate server (each isolate binds the same port)
+var shared = await Listener.bind(
+  InternetAddress.anyIPv4, 8080, shared: true,
+);
+```
 
 ## Architecture
 
-The library spawns a single background event loop thread on `tcp_init()`. Dart
-threads queue async operations (connect, read, write, accept, close) which
-return immediately. The event loop processes them using non-blocking sockets and
-`select()`, posting results back to Dart via `Dart_PostCObject_DL`.
+A single background thread processes async operations (connect, read, write,
+accept, close) using non-blocking sockets and `select()`, posting results to
+Dart via `Dart_PostCObject_DL`. Each isolate gets a lazily-created `_IOService`
+that manages a `RawReceivePort` and correlates completions to `Completer`s,
+following the Dart SDK's `_IOService` pattern with `keepIsolateAlive` toggling.
 
-Synchronous property accessors (address, port, keep-alive, no-delay) execute
-inline under a mutex and return immediately. They must not be used as Dart leaf
-calls (`isLeaf: true`) since the mutex can block.
+Handle-creating operations (`connect`, `bind`) store the calling isolate's
+native port on the socket. Subsequent operations route results to the correct
+isolate automatically. Read buffers are transferred to Dart as
+`ExternalTypedData` with a free finalizer. Write data is copied immediately
+by the native layer.
 
-```
-Dart threads              Event loop thread
-───────────              ─────────────────
-tcp_connect ──► queue ──► dispatch → select → retry → post_result ──► ReceivePort
-tcp_listen  ──►       ──►
-tcp_read    ──►       ──►
-```
+## API
 
-## Multi-Isolate Support
+`Connection` and `Listener` are abstract interface classes with static factory
+methods (`Connection.connect`, `Listener.bind`) and private implementations.
+`Connection` provides `read()`, `write()`, `closeWrite()`, `close()` for async
+I/O, plus synchronous accessors for `address`, `port`, `remoteAddress`,
+`remotePort`, `keepAlive`, and `noDelay`. `Listener` provides `accept()` and
+`close()`.
 
-Handle-creating operations (`tcp_connect`, `tcp_listen`) take a `send_port`
-parameter - the calling isolate's `receivePort.sendPort.nativePort`. This port
-is stored on the socket handle, and all subsequent operations on that handle
-(read, write, close) route results to the correct isolate automatically.
-Accepted connections inherit the listener's port.
-
-For `shared: true` listeners, each isolate creates its own listener bound to the
-same address via `SO_REUSEADDR`/`SO_REUSEPORT`. The kernel distributes incoming
-connections across them, and each isolate's accept results go to its own port.
-
-## Memory Management
-
-Read buffers are `malloc`'d by the event loop and transferred to Dart as
-`ExternalTypedData` with a `free_finalizer` callback - Dart's GC frees them
-automatically. Write data is copied immediately in `tcp_write()` since Dart's GC
-may relocate the original buffer while the write is pending. Partial writes are
-handled transparently by re-parking the remaining data until the socket is
-writable again.
-
-## Error Handling
-
-All functions return positive integers for success (handles, byte counts) or
-zero, and negative integers for errors. Error codes are defined in `tcp.h` and
-mirrored as constants in `ffi.dart` (`TCP_ERR_CONNECT_FAILED`, `TCP_ERR_CLOSED`,
-etc.).
-
-## Project Structure
-
-```
-lib/src/ffi.dart                Dart @Native FFI bindings
-zig/build.zig                   Zig build configuration
-zig/src/lib.zig                 Zig root module (@cImport bridge)
-zig/include/tcp.h               Public C API header
-zig/include/tcp.c               Implementation
-zig/include/dart_api_dl.{h,c}   Dart DL API (from Dart SDK)
-```
+`SocketException` is a sealed hierarchy mapping each native error code to a
+typed subclass (`ConnectFailed`, `ConnectionClosed`, `BindFailed`, etc.).
+The static `SocketException.checkResult()` helper throws on negative codes.
+`Connection.read()` catches `ConnectionClosed` and returns `null` for clean
+EOF handling.
 
 ## Building
 
 Requires [Zig](https://ziglang.org/download/) 0.15.x.
 
 ```sh
-cd zig
-zig build
-# Output: zig-out/lib/libzig_tcp.so (Linux) or zig_tcp.dll (Windows)
-
-# Cross-compile:
-zig build -Dtarget=x86_64-linux-gnu
-zig build -Dtarget=x86_64-windows-gnu
+cd zig && zig build
 ```
-
-## Dart Integration
-
-```dart
-import 'dart:ffi';
-import 'dart:isolate';
-
-// Initialize once (idempotent, safe from any isolate)
-tcp_init(NativeApi.initializeApiDLData);
-
-// Each isolate creates its own ReceivePort
-final receivePort = ReceivePort();
-final nativePort = receivePort.sendPort.nativePort;
-
-// Pass nativePort to handle-creating operations
-tcp_connect(nativePort, requestId, addr, addrLen, 8080, nullptr, 0, 0);
-tcp_listen(nativePort, requestId, addr, addrLen, 8080, false, 0, true);
-
-// Handle operations derive the port from the handle - no port needed
-tcp_read(requestId, handle);
-tcp_write(requestId, handle, data, 0, length);
-
-// Results arrive as [requestId, result, data?]
-receivePort.listen((List<Object?> message) {
-  final [requestId as int, result as int, data as Uint8List?] = message;
-  // result > 0: handle or byte count
-  // result < 0: error code (TCP_ERR_*)
-  // data != null: read completed (Uint8List)
-});
-```
-
-## Future Direction
-
-The `select()`-based event loop is a portable baseline. Planned backends include
-io_uring (Linux) and IOCP (Windows), implemented in Zig behind the same exported
-C API.
