@@ -1,152 +1,253 @@
 part of '/zig_tcp.dart';
 
-/// TCP connection.
+/// A TCP connection to a remote peer.
+///
+/// Obtained either by calling [Connection.connect] to initiate an outbound
+/// connection, or from [Listener.accept] to receive an inbound connection.
+///
+/// All I/O methods are asynchronous and return futures that complete when the
+/// native event loop finishes the operation. Property accessors ([address],
+/// [port], [remoteAddress], [remotePort], [keepAlive], [noDelay]) are
+/// synchronous and query native state directly.
+///
+/// ```dart
+/// final conn = await Connection.connect(InternetAddress.loopbackIPv4, 8080);
+///
+/// await conn.write(utf8.encode('GET / HTTP/1.0\r\n\r\n'));
+///
+/// while (true) {
+///   final data = await conn.read();
+///   if (data == null) break; // peer closed
+///   stdout.add(data);
+/// }
+///
+/// await conn.close();
+/// ```
 abstract interface class Connection {
-  /// The local address of the connection.
+  /// The local address this connection is bound to.
   InternetAddress get address;
 
-  /// The local port of the connection.
+  /// The local port number.
   int get port;
 
-  /// The remote address of the connection.
+  /// The remote peer's address.
   InternetAddress get remoteAddress;
 
-  /// The remote port of the connection.
+  /// The remote peer's port number.
   int get remotePort;
 
-  /// Enable/disable keep-alive functionality.
+  /// Whether TCP keep-alive is enabled.
   abstract bool keepAlive;
 
-  /// Enable/disable the use of Nagle's algorithm.
+  /// Whether Nagle's algorithm is disabled (`TCP_NODELAY`).
   abstract bool noDelay;
 
-  /// Read the incoming data from the connection into an array buffer.
+  /// Read data from the connection.
   ///
-  /// Resolves to either the array buffer or EOF null) if there was nothing
-  /// more to read.
+  /// Returns the received bytes, or `null` if the peer closed the
+  /// connection (EOF). The returned [Uint8List] is backed by native memory
+  /// that Dart's GC will free automatically via a finalizer.
   ///
-  /// It is possible for a read to successfully return empty buffer. This does
-  /// not indicate EOF.
+  /// Only one read should be outstanding at a time. Issuing concurrent
+  /// reads on the same connection is not supported.
   ///
   /// ```dart
-  /// // If the text "hello world" is received by the client:
-  /// final connection = await Connection.connect('example.com', 80);
-  /// final bytes = await connection.read(); // 11 bytes
-  /// final text = utf8.decode(bytes);  // "hello world"
+  /// final data = await conn.read();
+  /// if (data == null) print('connection closed');
   /// ```
   Future<Uint8List?> read();
 
-  /// Write the contents of the array buffer data) to the connection.
+  /// Write [data] to the connection.
   ///
-  /// Resolves to the number of bytes written.
+  /// The data is copied to native memory immediately, so the caller's
+  /// buffer can be reused or freed after this method returns. Partial
+  /// writes are handled transparently by the native event loop - the
+  /// returned future completes only after all bytes have been sent.
   ///
-  /// **It is not guaranteed that the full buffer will be written in a single
-  /// call.**
+  /// Returns the total number of bytes written.
   ///
   /// ```dart
-  /// final connection = await Connection.connect('example.com', 80);
-  /// final data = utf8.encode('Hello world');
-  /// final bytesWritten = await connection.write(data); // 11
+  /// final bytes = await conn.write(utf8.encode('hello'));
+  /// assert(bytes == 5);
   /// ```
   Future<int> write(Uint8List data, [int offset = 0, int? count]);
 
-  /// Shuts down shutdown(2) the write side of the connection.
+  /// Shut down the write side of the connection (send FIN).
   ///
-  /// Most callers should just use [close].
+  /// The peer's read will return EOF / null. The connection remains open
+  /// for reading from the peer until [close] is called.
   Future<void> closeWrite();
 
-  /// Closes the connection, freeing the resource.
+  /// Close the connection entirely.
   ///
-  /// ```dart
-  /// final connection = await Connection.connect('example.com', 80);
-  ///
-  /// // ...
-  ///
-  /// connection.close();
-  /// ```
+  /// Cancels any pending read or write operations on this handle. The
+  /// returned future completes when the socket has been closed.
   Future<void> close();
 
-  /// Connects to the [address] and [port].
+  /// Connect to [address] on [port].
+  ///
+  /// The [address] must be a resolved [InternetAddress] (numeric IPv4 or
+  /// IPv6). If [sourceAddress] is provided, the local socket is bound to
+  /// it before connecting; otherwise the OS assigns an ephemeral address.
+  ///
+  /// Returns a future that completes with the connected [Connection], or
+  /// fails with [ConnectFailed], [BindFailed], or another
+  /// [SocketException].
   ///
   /// ```dart
-  /// final connection = await Connection.connect('dart.dev', 80);
+  /// final conn = await Connection.connect(
+  ///   InternetAddress('93.184.216.34'), 80,
+  /// );
   /// ```
-  ///
-  /// [address] can either be a [String] or an [InternetAddress]. If [address]
-  /// is a [String], [connect] will perform a [InternetAddress.lookup] and try
-  /// all returned [InternetAddress]es, until connected. Unless a
-  /// connection was established, the error from the first failing connection is
-  /// returned.
-  ///
-  /// The argument [sourceAddress] can be used to specify the local
-  /// address to bind when making the connection. The [sourceAddress] can either
-  /// be a [String] or an [InternetAddress]. If a [String] is passed it must
-  /// hold a numeric IP address.
-  ///
-  /// The [sourcePort] defines the local port to bind to. If [sourcePort] is
-  /// not specified or zero, a port will be chosen.
-  ///
-  /// The argument [timeout] is used to specify the maximum allowed time to wait
-  /// for a connection to be established. If [timeout] is longer than the system
-  /// level timeout duration, a timeout may occur sooner than specified in
-  /// [timeout]. On timeout, a [SocketException] is thrown and all ongoing
-  /// connection attempts to [address] are cancelled.
   static Future<Connection> connect(
-    Object address,
+    InternetAddress address,
     int port, {
-    Object? sourceAddress,
-    int? sourcePort,
-    Duration? timeout,
-  }) {
-    throw UnimplementedError();
+    InternetAddress? sourceAddress,
+    int sourcePort = 0,
+  }) async {
+    var service = _IOService.instance;
+
+    var result = await service.request((id) {
+      // Encode the remote address as raw bytes in native memory.
+      // tcp_connect copies immediately, so we free right after the call.
+      var rawAddr = address.rawAddress;
+      var addrPtr = calloc<Uint8>(rawAddr.length);
+
+      // Encode the optional source address the same way.
+      Pointer<Uint8> srcPtr = nullptr;
+      int srcLen = 0;
+
+      try {
+        addrPtr.asTypedList(rawAddr.length).setAll(0, rawAddr);
+
+        if (sourceAddress != null) {
+          var rawSrc = sourceAddress.rawAddress;
+          srcPtr = calloc<Uint8>(rawSrc.length);
+          srcPtr.asTypedList(rawSrc.length).setAll(0, rawSrc);
+          srcLen = rawSrc.length;
+        }
+
+        var rc = tcp_connect(
+          service.nativePort,
+          id,
+          addrPtr,
+          rawAddr.length,
+          port,
+          srcPtr,
+          srcLen,
+          sourcePort,
+        );
+
+        if (rc < 0) {
+          throw SocketException.fromCode(rc);
+        }
+      } finally {
+        calloc.free(addrPtr);
+        if (srcPtr != nullptr) {
+          calloc.free(srcPtr);
+        }
+      }
+    });
+
+    return _Connection(result as int, service);
+  }
+}
+
+final class _Connection implements Connection {
+  _Connection(this._handle, this.service);
+
+  final int _handle;
+
+  final _IOService service;
+
+  @override
+  late final InternetAddress address = _getLocalAddress(_handle);
+
+  @override
+  late final int port = _getLocalPort(_handle);
+
+  @override
+  late final InternetAddress remoteAddress = _getRemoteAddress(_handle);
+
+  @override
+  late final int remotePort = _getRemotePort(_handle);
+
+  @override
+  bool get keepAlive {
+    var result = tcp_get_keep_alive(_handle);
+    SocketException.fromCode(result);
+    return result != 0;
   }
 
-  /// Listen announces on the [address] and [port].
-  ///
-  /// ```dart
-  /// final listener = await Connection.listen('localhost', 8080);
-  /// ```
-  ///
-  /// The [address] can either be a [String] or an
-  /// [InternetAddress]. If [address] is a [String], [listen] will
-  /// perform a [InternetAddress.lookup] and use the first value in the
-  /// list. To listen on the loopback adapter, which will allow only
-  /// incoming connections from the local host, use the value
-  /// [InternetAddress.loopbackIPv4] or
-  /// [InternetAddress.loopbackIPv6]. To allow for incoming
-  /// connection from the network use either one of the values
-  /// [InternetAddress.anyIPv4] or [InternetAddress.anyIPv6] to
-  /// bind to all interfaces or the IP address of a specific interface.
-  ///
-  /// If an IP version 6 (IPv6) address is used, both IP version 6
-  /// (IPv6) and version 4 (IPv4) connections will be accepted. To
-  /// restrict this to version 6 (IPv6) only, use [v6Only] to set
-  /// version 6 only. However, if the address is
-  /// [InternetAddress.loopbackIPv6], only IP version 6 (IPv6) connections
-  /// will be accepted.
-  ///
-  /// If [port] has the value 0 an ephemeral port will be chosen by
-  /// the system. The actual port used can be retrieved using the
-  /// [port] getter.
-  ///
-  /// The optional argument [backlog] can be used to specify the listen
-  /// backlog for the underlying OS listen setup. If [backlog] has the
-  /// value of 0 (the default) a reasonable value will be chosen by
-  /// the system.
-  ///
-  /// The optional argument [shared] specifies whether additional Listener
-  /// instances can listen on the same combination of [address], [port] and
-  /// [v6Only]. If [shared] is true and more server sockets from this
-  /// isolate or other isolates are bound to the port, then the incoming
-  /// connections will be distributed among all the listeners.
-  /// Connections can be distributed over multiple isolates this way.
-  static Future<Listener> listen(
-    Object address,
-    int port, {
-    bool v6Only = false,
-    int backlog = 0,
-    bool shared = false,
-  }) async {
-    throw UnimplementedError();
+  @override
+  set keepAlive(bool enabled) {
+    var code = tcp_set_keep_alive(_handle, enabled);
+    SocketException.fromCode(code);
+  }
+
+  @override
+  bool get noDelay {
+    var result = tcp_get_no_delay(_handle);
+    SocketException.checkResult(result);
+    return result != 0;
+  }
+
+  @override
+  set noDelay(bool enabled) {
+    var code = tcp_set_no_delay(_handle, enabled);
+    SocketException.checkResult(code);
+  }
+
+  @override
+  Future<Uint8List?> read() async {
+    try {
+      var result = await service.request((id) {
+        var code = tcp_read(id, _handle);
+        SocketException.checkResult(code);
+      });
+
+      return result as Uint8List?;
+    } on ConnectionClosed {
+      return null;
+    }
+  }
+
+  // TODO(leaf): try to remove copying or update tcp_write.
+  @override
+  Future<int> write(Uint8List data, [int offset = 0, int? count]) async {
+    var result = await service.request((id) {
+      var length = data.length;
+      var pointer = calloc<Uint8>(length);
+
+      try {
+        for (var i = 0; i < length; i++) {
+          pointer[i] = data[i];
+        }
+
+        var code = tcp_write(id, _handle, pointer, offset, length);
+        SocketException.checkResult(code);
+      } finally {
+        // Safe to free - tcp_write copies the data immediately.
+        calloc.free(pointer);
+      }
+    });
+
+    return result as int;
+  }
+
+  @override
+  Future<void> closeWrite() async {
+    await service.request((id) {
+      var code = tcp_close_write(id, _handle);
+      SocketException.checkResult(code);
+    });
+  }
+
+  @override
+  Future<void> close() async {
+    await service.request((id) {
+      var code = tcp_close(id, _handle);
+      SocketException.checkResult(code);
+    });
   }
 }
