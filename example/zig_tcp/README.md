@@ -1,5 +1,3 @@
-<!-- README.md -->
-
 # zig_tcp
 
 Cross-platform TCP sockets for Dart. Native C backend compiled via Zig,
@@ -28,15 +26,13 @@ await connection.close();
 await listener.close();
 
 // Client
-var conn = await Connection.connect(InternetAddress.loopbackIPv4, 8080);
-await conn.write(utf8.encode('hello'));
-var response = await conn.read();
-await conn.close();
+var connection = await Connection.connect(InternetAddress.loopbackIPv4, 8080);
+await connection.write(utf8.encode('hello'));
+var response = await connection.read();
+await connection.close();
 
 // Multi-isolate server (each isolate binds the same port)
-var shared = await Listener.bind(
-  InternetAddress.anyIPv4, 8080, shared: true,
-);
+var shared = await Listener.bind(InternetAddress.loopbackIPv4, 8080, shared: true);
 ```
 
 ## Architecture

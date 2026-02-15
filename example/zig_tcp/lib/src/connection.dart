@@ -11,17 +11,17 @@ part of '/zig_tcp.dart';
 /// synchronous and query native state directly.
 ///
 /// ```dart
-/// final conn = await Connection.connect(InternetAddress.loopbackIPv4, 8080);
+/// var connection = await Connection.connect(InternetAddress.loopbackIPv4, 8080);
 ///
-/// await conn.write(utf8.encode('GET / HTTP/1.0\r\n\r\n'));
+/// await connection.write(utf8.encode('GET / HTTP/1.0\r\n\r\n'));
 ///
 /// while (true) {
-///   final data = await conn.read();
+///   var data = await connection.read();
 ///   if (data == null) break; // peer closed
 ///   stdout.add(data);
 /// }
 ///
-/// await conn.close();
+/// await connection.close();
 /// ```
 abstract interface class Connection {
   /// The local address this connection is bound to.
@@ -105,46 +105,48 @@ abstract interface class Connection {
     InternetAddress? sourceAddress,
     int sourcePort = 0,
   }) async {
-    var service = _IOService.instance;
+    var service = _IOService();
 
     var result = await service.request((id) {
-      // Encode the remote address as raw bytes in native memory.
-      // tcp_connect copies immediately, so we free right after the call.
-      var rawAddr = address.rawAddress;
-      var addrPtr = calloc<Uint8>(rawAddr.length);
+      var rawAddress = address.rawAddress;
+      var length = rawAddress.length;
+      var pointer = calloc<Uint8>(length);
 
-      // Encode the optional source address the same way.
-      Pointer<Uint8> srcPtr = nullptr;
-      int srcLen = 0;
+      Pointer<Uint8> sourcePointer = nullptr;
+      var sourceLength = 0;
 
       try {
-        addrPtr.asTypedList(rawAddr.length).setAll(0, rawAddr);
-
-        if (sourceAddress != null) {
-          var rawSrc = sourceAddress.rawAddress;
-          srcPtr = calloc<Uint8>(rawSrc.length);
-          srcPtr.asTypedList(rawSrc.length).setAll(0, rawSrc);
-          srcLen = rawSrc.length;
+        for (var i = 0; i < length; i++) {
+          pointer[i] = rawAddress[i];
         }
 
-        var rc = tcp_connect(
+        if (sourceAddress != null) {
+          rawAddress = sourceAddress.rawAddress;
+          sourceLength = rawAddress.length;
+          sourcePointer = calloc<Uint8>(sourceLength);
+
+          for (var i = 0; i < sourceLength; i++) {
+            sourcePointer[i] = rawAddress[i];
+          }
+        }
+
+        var code = tcp_connect(
           service.nativePort,
           id,
-          addrPtr,
-          rawAddr.length,
+          pointer,
+          length,
           port,
-          srcPtr,
-          srcLen,
+          sourcePointer,
+          sourceLength,
           sourcePort,
         );
 
-        if (rc < 0) {
-          throw SocketException.fromCode(rc);
-        }
+        SocketException.checkResult(code);
       } finally {
-        calloc.free(addrPtr);
-        if (srcPtr != nullptr) {
-          calloc.free(srcPtr);
+        calloc.free(pointer);
+
+        if (sourcePointer != nullptr) {
+          calloc.free(sourcePointer);
         }
       }
     });
@@ -153,12 +155,17 @@ abstract interface class Connection {
   }
 }
 
-final class _Connection implements Connection {
-  _Connection(this.handle, this.service);
+final class _Connection extends LinkedListEntry<_Connection>
+    implements Connection {
+  _Connection(this.handle, this.service) : closed = false {
+    service.register(handle);
+  }
 
   final int handle;
 
   final _IOService service;
+
+  bool closed;
 
   @override
   late final InternetAddress address = _getLocalAddress(handle);
@@ -201,12 +208,12 @@ final class _Connection implements Connection {
   @override
   Future<Uint8List?> read() async {
     try {
-      var result = await service.request((id) {
+      var response = await service.request((id) {
         var code = tcp_read(id, handle);
         SocketException.checkResult(code);
       });
 
-      return result as Uint8List?;
+      return response.data;
     } on ConnectionClosed {
       return null;
     }
@@ -215,7 +222,7 @@ final class _Connection implements Connection {
   // TODO(leaf): try to remove copying or update tcp_write.
   @override
   Future<int> write(Uint8List data, [int offset = 0, int? count]) async {
-    var result = await service.request((id) {
+    var response = await service.request((id) {
       var length = data.length;
       var pointer = calloc<Uint8>(length);
 
@@ -227,12 +234,11 @@ final class _Connection implements Connection {
         var code = tcp_write(id, handle, pointer, offset, length);
         SocketException.checkResult(code);
       } finally {
-        // Safe to free - tcp_write copies the data immediately.
         calloc.free(pointer);
       }
     });
 
-    return result as int;
+    return response.result;
   }
 
   @override
@@ -245,9 +251,16 @@ final class _Connection implements Connection {
 
   @override
   Future<void> close() async {
+    if (closed) {
+      return;
+    }
+
     await service.request((id) {
       var code = tcp_close(id, handle);
       SocketException.checkResult(code);
     });
+
+    closed = true;
+    service.unregister(this);
   }
 }

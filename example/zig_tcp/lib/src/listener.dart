@@ -46,11 +46,13 @@ abstract interface class Listener {
 
   /// Close the listener.
   ///
-  /// If [force] is `true`, active connections that were accepted from this
-  /// listener are also closed (not yet implemented in the native layer -
-  /// currently only the listener socket itself is closed).
+  /// If [force] is `true`, all connections that were accepted from this
+  /// listener and haven't been closed yet are closed as well. Any pending
+  /// [accept] call completes with an error.
   ///
-  /// Any pending [accept] call completes with an error.
+  /// If [force] is `false` (the default), only the listener socket itself
+  /// is closed. Accepted connections remain alive and must be closed
+  /// individually.
   Future<void> close({bool force = false});
 
   /// Bind to [address] on [port] and start listening for connections.
@@ -81,7 +83,7 @@ abstract interface class Listener {
     int backlog = 0,
     bool shared = false,
   }) async {
-    var service = _IOService.instance;
+    var service = _IOService();
 
     var result = await service.request((id) {
       var rawAddress = address.rawAddress;
@@ -115,11 +117,16 @@ abstract interface class Listener {
 }
 
 final class _Listener implements Listener {
-  _Listener(this.handle, this.service);
+  _Listener(this.handle, this.service)
+    : connections = LinkedList<_Connection>() {
+    service.register(this);
+  }
 
   final int handle;
 
   final _IOService service;
+
+  final LinkedList<_Connection> connections;
 
   @override
   late final InternetAddress address = _getLocalAddress(handle);
@@ -134,14 +141,27 @@ final class _Listener implements Listener {
       SocketException.checkResult(code);
     });
 
-    return _Connection(result as int, service);
+    service.register(this);
+
+    var connection = _Connection(result as int, service);
+    connections.add(connection);
+    return connection;
   }
 
   @override
   Future<void> close({bool force = false}) async {
+    if (force) {
+      for (var connection in connections.toList()) {
+        await connection.close();
+        connection.unlink();
+      }
+    }
+
     await service.request((id) {
-      var code = tcp_listener_close(id, handle, force);
+      var code = tcp_listener_close(id, handle, false);
       SocketException.checkResult(code);
     });
+
+    service.unregister(this);
   }
 }

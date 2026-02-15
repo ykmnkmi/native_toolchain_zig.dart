@@ -71,6 +71,12 @@
     #define THREAD_RETURN_TYPE DWORD WINAPI
     #define THREAD_RETURN      return 0
 
+    /* ------- Static Lock (SRWLOCK) ------- */
+    typedef SRWLOCK                  static_mutex_t;
+    #define STATIC_MUTEX_INIT        SRWLOCK_INIT
+    static inline void static_mutex_lock(static_mutex_t* m)   { AcquireSRWLockExclusive(m); }
+    static inline void static_mutex_unlock(static_mutex_t* m) { ReleaseSRWLockExclusive(m); }
+
 #else /* POSIX */
     #include <sys/socket.h>
     #include <sys/select.h>
@@ -136,6 +142,12 @@
 
     #define THREAD_RETURN_TYPE void*
     #define THREAD_RETURN      return NULL
+
+    /* ------- Static Lock (pthread_mutex) ------- */
+    typedef pthread_mutex_t          static_mutex_t;
+    #define STATIC_MUTEX_INIT        PTHREAD_MUTEX_INITIALIZER
+    static inline void static_mutex_lock(static_mutex_t* m)   { pthread_mutex_lock(m); }
+    static inline void static_mutex_unlock(static_mutex_t* m) { pthread_mutex_unlock(m); }
 #endif
 
 /* Dart API includes */
@@ -289,6 +301,10 @@ static struct {
     /* Pending ops – only touched by event loop thread, no lock needed */
     pending_op_t   pending[MAX_PENDING_OPS];
 } g_state = {0};
+
+/* Global ref count guarding initialization */
+static static_mutex_t g_init_mutex = STATIC_MUTEX_INIT;
+static int            g_ref_count  = 0;
 
 /* =============================================================================
  * Helper Functions
@@ -1254,39 +1270,49 @@ static THREAD_RETURN_TYPE event_loop_thread(void* arg) {
  */
 
 void tcp_init(void* dart_api_dl) {
-    if (g_state.initialized) return;
+    static_mutex_lock(&g_init_mutex);
 
+    // Only initialize if this is the first reference
+    if (g_ref_count++ == 0) {
+        if (!g_state.initialized) {
 #ifdef _WIN32
-    WSADATA wsa_data;
-    WSAStartup(MAKEWORD(2, 2), &wsa_data);
+            WSADATA wsa_data;
+            WSAStartup(MAKEWORD(2, 2), &wsa_data);
 #endif
 
-    if (Dart_InitializeApiDL(dart_api_dl) != 0) return;
+            if (Dart_InitializeApiDL(dart_api_dl) == 0) {
+                g_state.next_handle = 0;
+                g_state.shutdown    = false;
 
-    g_state.next_handle = 0;
-    g_state.shutdown    = false;
+                mutex_init(&g_state.socket_mutex);
 
-    mutex_init(&g_state.socket_mutex);
+                for (int i = 0; i < MAX_SOCKETS; i++) {
+                    g_state.sockets[i].type = SOCKET_TYPE_NONE;
+                    g_state.sockets[i].fd   = INVALID_SOCKET_VALUE;
+                }
 
-    for (int i = 0; i < MAX_SOCKETS; i++) {
-        g_state.sockets[i].type = SOCKET_TYPE_NONE;
-        g_state.sockets[i].fd   = INVALID_SOCKET_VALUE;
-    }
+                for (int i = 0; i < MAX_PENDING_OPS; i++) {
+                    g_state.pending[i].active = false;
+                }
 
-    for (int i = 0; i < MAX_PENDING_OPS; i++) {
-        g_state.pending[i].active = false;
-    }
+                queue_init(&g_state.queue);
 
-    queue_init(&g_state.queue);
-
-    /* Start event loop thread */
+                /* Start event loop thread */
 #ifdef _WIN32
-    thread_create(&g_state.event_thread, (LPTHREAD_START_ROUTINE)event_loop_thread, NULL);
+                thread_create(&g_state.event_thread, (LPTHREAD_START_ROUTINE)event_loop_thread, NULL);
 #else
-    thread_create(&g_state.event_thread, event_loop_thread, NULL);
+                thread_create(&g_state.event_thread, event_loop_thread, NULL);
 #endif
 
-    g_state.initialized = true;
+                g_state.initialized = true;
+            } else {
+                // Failed to init API DL? Rollback count
+                g_ref_count--;
+            }
+        }
+    }
+
+    static_mutex_unlock(&g_init_mutex);
 }
 
 /**
@@ -1294,46 +1320,52 @@ void tcp_init(void* dart_api_dl) {
  * resources.  Must be called before the process exits.
  */
 void tcp_destroy(void) {
-    if (!g_state.initialized) return;
+    static_mutex_lock(&g_init_mutex);
 
-    /* Signal shutdown and wake the event loop */
-    g_state.shutdown = true;
-    mutex_lock(&g_state.queue.mutex);
-    cond_signal(&g_state.queue.cond);
-    mutex_unlock(&g_state.queue.mutex);
+    // Only destroy if this is the last reference
+    if (g_ref_count > 0 && --g_ref_count == 0) {
+        if (g_state.initialized) {
+            /* Signal shutdown and wake the event loop */
+            g_state.shutdown = true;
+            mutex_lock(&g_state.queue.mutex);
+            cond_signal(&g_state.queue.cond);
+            mutex_unlock(&g_state.queue.mutex);
 
-    thread_join(g_state.event_thread);
+            thread_join(g_state.event_thread);
 
-    /* Free any remaining pending write buffers */
-    for (int i = 0; i < MAX_PENDING_OPS; i++) {
-        if (g_state.pending[i].active &&
-            g_state.pending[i].req.op == OP_WRITE &&
-            g_state.pending[i].req.data.write.data) {
-            free(g_state.pending[i].req.data.write.data);
-        }
-        g_state.pending[i].active = false;
-    }
+            /* Free any remaining pending write buffers */
+            for (int i = 0; i < MAX_PENDING_OPS; i++) {
+                if (g_state.pending[i].active &&
+                    g_state.pending[i].req.op == OP_WRITE &&
+                    g_state.pending[i].req.data.write.data) {
+                    free(g_state.pending[i].req.data.write.data);
+                }
+                g_state.pending[i].active = false;
+            }
 
-    /* Close all sockets */
-    mutex_lock(&g_state.socket_mutex);
-    for (int i = 0; i < MAX_SOCKETS; i++) {
-        if (g_state.sockets[i].type != SOCKET_TYPE_NONE &&
-            g_state.sockets[i].fd != INVALID_SOCKET_VALUE) {
-            close_socket(g_state.sockets[i].fd);
-        }
-        g_state.sockets[i].type = SOCKET_TYPE_NONE;
-        g_state.sockets[i].fd   = INVALID_SOCKET_VALUE;
-    }
-    mutex_unlock(&g_state.socket_mutex);
+            /* Close all sockets */
+            mutex_lock(&g_state.socket_mutex);
+            for (int i = 0; i < MAX_SOCKETS; i++) {
+                if (g_state.sockets[i].type != SOCKET_TYPE_NONE &&
+                    g_state.sockets[i].fd != INVALID_SOCKET_VALUE) {
+                    close_socket(g_state.sockets[i].fd);
+                }
+                g_state.sockets[i].type = SOCKET_TYPE_NONE;
+                g_state.sockets[i].fd   = INVALID_SOCKET_VALUE;
+            }
+            mutex_unlock(&g_state.socket_mutex);
 
-    queue_destroy(&g_state.queue);
-    mutex_destroy(&g_state.socket_mutex);
+            queue_destroy(&g_state.queue);
+            mutex_destroy(&g_state.socket_mutex);
 
 #ifdef _WIN32
-    WSACleanup();
+            WSACleanup();
 #endif
+            g_state.initialized = false;
+        }
+    }
 
-    g_state.initialized = false;
+    static_mutex_unlock(&g_init_mutex);
 }
 
 /* =============================================================================
