@@ -165,7 +165,7 @@ final class _Listener implements Listener {
     }
 
     await service.request((id) {
-      var code = tcp_listener_close(id, handle, false);
+      var code = tcp_listener_close(id, handle, force);
       SocketException.checkResult(code);
     });
 

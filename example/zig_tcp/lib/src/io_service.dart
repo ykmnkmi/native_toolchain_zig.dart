@@ -12,7 +12,7 @@ part of '/zig_tcp.dart';
 /// the instance is created when the first [Connection.connect] or
 /// [Listener.bind] is called, and disposed when the last handle is closed.
 /// Between those points, [RawReceivePort.keepIsolateAlive] is toggled per the
-/// SDK's `_IOService` pattern — the port keeps the isolate alive only while
+/// SDK's `_IOService` pattern - the port keeps the isolate alive only while
 /// there are pending async operations.
 final class _IOService {
   static _IOService? instance;
@@ -29,7 +29,7 @@ final class _IOService {
       pending = HashMap<int, Completer<_Response>>(),
       activeHandles = HashSet<Object>(),
       next = 0 {
-    // Idempotent on the native side — only the first call across all
+    // Idempotent on the native side - only the first call across all
     // isolates actually starts the event loop.
     tcp_init(NativeApi.initializeApiDLData);
     receivePort.handler = handler;
@@ -64,7 +64,7 @@ final class _IOService {
   /// disposes the service when it reaches zero.
   ///
   /// At this point the close completion has already been received by
-  /// [handler], so we're running on the Dart thread — safe to close
+  /// [handler], so we're running on the Dart thread - safe to close
   /// the receive port and null out the singleton.
   void unregister(Object handle) {
     activeHandles.remove(handle);
@@ -154,14 +154,14 @@ final class _IOService {
   /// use.
   ///
   /// When the last handle is closed, there may still be pending completers
-  /// in the map — for example a read that was in flight when close was
+  /// in the map - for example a read that was in flight when close was
   /// called. The native close cancels those operations, but the error
   /// completions arrive asynchronously and would be delivered to a port
   /// we're about to close. Rather than letting those futures hang forever,
   /// we complete them with errors here.
   ///
   /// We intentionally do NOT call [tcp_destroy] here because the native
-  /// event loop is a process-wide shared resource — another isolate may
+  /// event loop is a process-wide shared resource - another isolate may
   /// still be using it. The event loop thread is lightweight when idle
   /// (sleeping in select with a timeout) and the OS reclaims all resources
   /// at process exit.

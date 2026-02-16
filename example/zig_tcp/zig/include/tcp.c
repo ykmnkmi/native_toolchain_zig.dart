@@ -643,7 +643,7 @@ static void free_finalizer(void* isolate_callback_data, void* peer) {
  *
  * @param send_port  The Dart native port to post to. If the port has been
  *                   closed (isolate shut down), Dart_PostCObject_DL returns
- *                   false — we silently drop the message and free any data.
+ *                   false - we silently drop the message and free any data.
  */
 static void post_result(Dart_Port send_port, int64_t request_id,
                         int64_t result, uint8_t* data, int64_t data_len) {
@@ -675,7 +675,7 @@ static void post_result(Dart_Port send_port, int64_t request_id,
     c_array.value.as_array.values = values;
 
     if (!Dart_PostCObject_DL(send_port, &c_array)) {
-        /* Port closed (isolate shut down) — free data if we own it */
+        /* Port closed (isolate shut down) - free data if we own it */
         if (data) free(data);
     }
 }
@@ -955,10 +955,10 @@ static void process_listen(request_t* req) {
         return;
     }
 
-    /* Socket options */
+    /* Socket options - always allow reuse to avoid TIME_WAIT blocking */
+    int optval = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (char*)&optval, sizeof(optval));
     if (req->data.listen.shared) {
-        int optval = 1;
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (char*)&optval, sizeof(optval));
 #ifdef SO_REUSEPORT
         setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, (char*)&optval, sizeof(optval));
 #endif
