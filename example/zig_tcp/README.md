@@ -1,73 +1,54 @@
 # zig_tcp
 
-Cross-platform TCP sockets for Dart. Native C backend compiled via Zig,
-async I/O through a background event loop, multi-isolate support.
-
-## Usage
-
-```dart
-import 'dart:convert';
-import 'dart:io';
-import 'package:zig_tcp/zig_tcp.dart';
-
-// Server
-var listener = await Listener.bind(InternetAddress.loopbackIPv4, 8080);
-print('Listening on ${listener.address.address}:${listener.port}');
-
-var connection = await listener.accept();
-var data = await connection.read(); // Uint8List? — null on EOF
-
-if (data != null) {
-  print(utf8.decode(data));
-  await connection.write(utf8.encode('echo\n'));
-}
-
-await connection.close();
-await listener.close();
-
-// Client
-var connection = await Connection.connect(InternetAddress.loopbackIPv4, 8080);
-await connection.write(utf8.encode('hello'));
-var response = await connection.read();
-await connection.close();
-
-// Multi-isolate server (each isolate binds the same port)
-var shared = await Listener.bind(InternetAddress.loopbackIPv4, 8080, shared: true);
-```
+Cross-platform TCP socket library for Dart with a native C backend compiled
+through Zig.
 
 ## Architecture
 
-A single background thread processes async operations (connect, read, write,
-accept, close) using non-blocking sockets and `select()`, posting results to
-Dart via `Dart_PostCObject_DL`. Each isolate gets a lazily-created `_IOService`
-that manages a `RawReceivePort` and correlates completions to `Completer`s,
-following the Dart SDK's `_IOService` pattern with `keepIsolateAlive` toggling.
+A single background event loop thread per process handles all async I/O.
+Operations flow through a bounded ring buffer queue from Dart to the event loop,
+which uses non-blocking sockets and `select()` to multiplex. Results are posted
+back via `Dart_PostCObject_DL`.
 
-Handle-creating operations (`connect`, `bind`) store the calling isolate's
-native port on the socket. Subsequent operations route results to the correct
-isolate automatically. Read buffers are transferred to Dart as
-`ExternalTypedData` with a free finalizer. Write data is copied immediately
-by the native layer.
+Each Dart isolate gets a lazily-created `_IOService` singleton with its own
+`RawReceivePort`. Handle-creating operations (`connect`, `bind`, `accept`) pass
+the isolate's `nativePort` to native, which stores it on the socket handle.
+Subsequent operations route results to the correct isolate automatically.
 
-## API
+### Sync vs async split
 
-`Connection` and `Listener` are abstract interface classes with static factory
-methods (`Connection.connect`, `Listener.bind`) and private implementations.
-`Connection` provides `read()`, `write()`, `closeWrite()`, `close()` for async
-I/O, plus synchronous accessors for `address`, `port`, `remoteAddress`,
-`remotePort`, `keepAlive`, and `noDelay`. `Listener` provides `accept()` and
-`close()`.
+Synchronous operations (address, port, keepAlive, noDelay) are direct `@Native`
+FFI calls under a mutex. Async operations (connect, read, write, accept, close)
+go through the event loop queue.
 
-`SocketException` is a sealed hierarchy mapping each native error code to a
-typed subclass (`ConnectFailed`, `ConnectionClosed`, `BindFailed`, etc.).
-The static `SocketException.checkResult()` helper throws on negative codes.
-`Connection.read()` catches `ConnectionClosed` and returns `null` for clean
-EOF handling.
+### Memory management
 
-## Building
+Read buffers are `malloc`'d by the event loop and transferred to Dart as
+`ExternalTypedData` with a `free_finalizer` - Dart's GC frees them. Write data
+is copied immediately by `tcp_write` since Dart's GC may relocate buffers.
 
-Requires [Zig](https://ziglang.org/download/) 0.15.x.
+### Lifecycle
 
-```sh
-cd zig && zig build
-```
+`_IOService` uses a `HashSet<Object>` for handle tracking. Handles register on
+creation and unregister on close. When the set empties, the service drains
+pending completers with `InvalidHandle` errors, closes the receive port, and
+nulls the singleton. `tcp_destroy` is never called from Dart - the event loop is
+process-wide and lightweight when idle.
+
+`_Connection` extends `LinkedListEntry` for O(1) removal from `_Listener`'s
+accepted list on close. Standalone connections (from `Connection.connect`) skip
+unlink since they're not in any list.
+
+### Error handling
+
+Native functions return positive integers for success and negative for errors.
+`SocketException` is a sealed hierarchy with a `fromCode` factory.
+`Connection.read` catches `ConnectionClosed` internally and returns `null` for
+EOF.
+
+### Windows
+
+DLL symbols require `TCP_EXPORT` (`__declspec(dllexport)`) on both declarations
+and definitions - Zig's clang doesn't propagate it from declaration alone.
+`SO_REUSEADDR` is set on all listener sockets to avoid `TIME_WAIT` blocking on
+restart.
