@@ -52,7 +52,7 @@ abstract interface class Connection {
   /// reads on the same connection is not supported.
   ///
   /// ```dart
-  /// final data = await conn.read();
+  /// var data = await connection.read();
   /// if (data == null) print('connection closed');
   /// ```
   Future<Uint8List?> read();
@@ -67,7 +67,7 @@ abstract interface class Connection {
   /// Returns the total number of bytes written.
   ///
   /// ```dart
-  /// final bytes = await conn.write(utf8.encode('hello'));
+  /// var bytes = await connection.write(utf8.encode('hello'));
   /// assert(bytes == 5);
   /// ```
   Future<int> write(Uint8List data, [int offset = 0, int? count]);
@@ -95,9 +95,7 @@ abstract interface class Connection {
   /// [SocketException].
   ///
   /// ```dart
-  /// final conn = await Connection.connect(
-  ///   InternetAddress('93.184.216.34'), 80,
-  /// );
+  /// var connection = await Connection.connect(InternetAddress('93.184.216.34'), 80);
   /// ```
   static Future<Connection> connect(
     InternetAddress address,
@@ -107,7 +105,7 @@ abstract interface class Connection {
   }) async {
     var service = _IOService();
 
-    var result = await service.request((id) {
+    var response = await service.request((id) {
       var rawAddress = address.rawAddress;
       var length = rawAddress.length;
       var pointer = calloc<Uint8>(length);
@@ -151,14 +149,16 @@ abstract interface class Connection {
       }
     });
 
-    return _Connection(result as int, service);
+    // Extract the native handle from the response. The _Connection
+    // constructor handles service.register(this) internally.
+    return _Connection(response.result, service);
   }
 }
 
 final class _Connection extends LinkedListEntry<_Connection>
     implements Connection {
   _Connection(this.handle, this.service) : closed = false {
-    service.register(handle);
+    service.register(this);
   }
 
   final int handle;
@@ -261,6 +261,11 @@ final class _Connection extends LinkedListEntry<_Connection>
     });
 
     closed = true;
+
+    if (list != null) {
+      unlink();
+    }
+
     service.unregister(this);
   }
 }

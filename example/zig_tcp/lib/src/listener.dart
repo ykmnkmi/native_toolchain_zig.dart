@@ -6,11 +6,11 @@ part of '/zig_tcp.dart';
 /// connections as [Connection] objects.
 ///
 /// ```dart
-/// final listener = await Connection.listen(InternetAddress.anyIPv4, 8080);
+/// var listener = await Listener.bind(InternetAddress.anyIPv4, 8080);
 /// print('Listening on ${listener.address.address}:${listener.port}');
 ///
 /// while (true) {
-///   final client = await listener.accept();
+///   var client = await listener.accept();
 ///   handleClient(client);
 /// }
 /// ```
@@ -28,6 +28,13 @@ abstract interface class Listener {
   /// the OS assigned.
   int get port;
 
+  /// The number of accepted connections that are still open.
+  ///
+  /// Connections are tracked automatically: added on [accept] and removed
+  /// when [Connection.close] completes. Useful for monitoring or waiting
+  /// until all connections have drained before shutting down.
+  int get acceptedConnections;
+
   /// Accept the next incoming connection.
   ///
   /// Blocks (asynchronously) until a client connects. The returned [Connection]
@@ -38,7 +45,7 @@ abstract interface class Listener {
   ///
   /// ```dart
   /// while (true) {
-  ///   final connection = await listener.accept();
+  ///   var connection = await listener.accept();
   ///   unawaited(handleClient(connection));
   /// }
   /// ```
@@ -85,7 +92,7 @@ abstract interface class Listener {
   }) async {
     var service = _IOService();
 
-    var result = await service.request((id) {
+    var response = await service.request((id) {
       var rawAddress = address.rawAddress;
       var length = rawAddress.length;
       var pointer = calloc<Uint8>(length);
@@ -112,7 +119,7 @@ abstract interface class Listener {
       }
     });
 
-    return _Listener(result as int, service);
+    return _Listener(response.result, service);
   }
 }
 
@@ -135,15 +142,16 @@ final class _Listener implements Listener {
   late final int port = _getLocalPort(handle);
 
   @override
+  int get acceptedConnections => connections.length;
+
+  @override
   Future<Connection> accept() async {
-    var result = await service.request((id) {
+    var response = await service.request((id) {
       var code = tcp_accept(id, handle);
       SocketException.checkResult(code);
     });
 
-    service.register(this);
-
-    var connection = _Connection(result as int, service);
+    var connection = _Connection(response.result, service);
     connections.add(connection);
     return connection;
   }
@@ -153,7 +161,6 @@ final class _Listener implements Listener {
     if (force) {
       for (var connection in connections.toList()) {
         await connection.close();
-        connection.unlink();
       }
     }
 
