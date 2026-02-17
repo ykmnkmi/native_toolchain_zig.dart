@@ -6,7 +6,7 @@ import 'package:logging/logging.dart';
 import 'package:native_toolchain_zig/src/code_config_mapping.dart';
 import 'package:native_toolchain_zig/src/target.dart';
 import 'package:native_toolchain_zig/src/utils.dart' as utils;
-import 'package:native_toolchain_zig/src/zon_to_json.dart';
+import 'package:native_toolchain_zig/src/zon_parser.dart';
 import 'package:path/path.dart' as path;
 
 /// Builds Zig code as native assets using `zig build`.
@@ -159,7 +159,7 @@ class ZigBuilder implements Builder {
       // TODO(build.zig.zon): write ZON parser in Dart.
       if (packageName != 'native_toolchain_zig') {
         // Validate?
-        Map<String, Object?>? zon = parseZon(buildZigZon.readAsStringSync());
+        Object? zon = parseZon(buildZigZon.readAsStringSync());
 
         if (zon case {'paths': List<Object?> zonPaths}) {
           for (Object? entry in zonPaths) {
