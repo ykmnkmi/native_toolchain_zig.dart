@@ -11,7 +11,10 @@ export fn zon_free(ptr: [*:0]u8) void {
 }
 
 const Manifest = struct {
-    // We need only paths.
+    // Ignore name and dependencies.
+    version: []const u8,
+    minimum_zig_version: []const u8,
+    fingerprint: u64,
     paths: []const []const u8 = &.{},
 };
 

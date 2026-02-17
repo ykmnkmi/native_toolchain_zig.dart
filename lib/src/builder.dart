@@ -129,8 +129,8 @@ class ZigBuilder implements Builder {
     );
 
     if (result.exitCode != 0) {
-      String stderr = result.stderr as String;
       String stdout = result.stdout as String;
+      String stderr = result.stderr as String;
       logger.severe('Build failed:\n$stderr\n$stdout');
       throw BuildError(
         message:
@@ -155,17 +155,42 @@ class ZigBuilder implements Builder {
     if (buildZigZon.existsSync()) {
       output.dependencies.add(buildZigZon.uri);
 
+      // To compile itself.
+      // TODO(build.zig.zon): write ZON parser in Dart.
       if (packageName != 'native_toolchain_zig') {
-        Map<String, Object>? zon = parseZon(buildZigZon.readAsStringSync());
+        // Validate?
+        Map<String, Object?>? zon = parseZon(buildZigZon.readAsStringSync());
 
-        if (zon case {'paths': List<String> zonPaths}) {
-          // ...
+        if (zon case {'paths': List<Object?> zonPaths}) {
+          for (Object? entry in zonPaths) {
+            if (entry is! String) {
+              continue;
+            }
+
+            // build.zig and build.zig.zon are already tracked above.
+            if (entry == 'build.zig' || entry == 'build.zig.zon') {
+              continue;
+            }
+
+            String fullPath = path.join(zigDirectory, entry);
+            FileSystemEntityType type = FileSystemEntity.typeSync(fullPath);
+
+            if (type == FileSystemEntityType.file) {
+              output.dependencies.add(Uri.file(fullPath));
+            } else if (type == FileSystemEntityType.directory) {
+              List<FileSystemEntity> entities = Directory(
+                fullPath,
+              ).listSync(recursive: true);
+
+              for (FileSystemEntity entity in entities) {
+                if (entity is File) {
+                  output.dependencies.add(entity.uri);
+                }
+              }
+            }
+          }
         }
       }
-    }
-
-    for (File file in utils.listZigFiles(zigDirectory)) {
-      output.dependencies.add(file.uri);
     }
 
     for (AssetRouting routing in assetRouting) {
