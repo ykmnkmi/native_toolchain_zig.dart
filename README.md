@@ -68,8 +68,6 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/lib.zig"),
             .target = target,
             .optimize = optimize,
-            .link_libc = true,
-            .pic = true,
         }),
     });
 
@@ -93,8 +91,6 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .optimize = optimize,
-        .link_libc = true,
-        .pic = true,
     });
 
     // Dynamic library (.so, .dylib, .dll)
@@ -144,8 +140,6 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/lib.zig"),
             .target = target,
             .optimize = optimize,
-            .link_libc = true,
-            .pic = true,
         }),
     });
 
@@ -163,6 +157,7 @@ Build with: `zig build -Dlinkage=static` or `zig build -Dlinkage=dynamic`
     .name = .my_package,
     .version = "0.1.0",
     .minimum_zig_version = "0.15.0",
+    .fingerprint = 0x..........,
     .paths = .{
         "src",
         "build.zig",
@@ -170,6 +165,16 @@ Build with: `zig build -Dlinkage=static` or `zig build -Dlinkage=dynamic`
     },
 }
 ```
+
+> [!IMPORTANT]
+> The `paths` field drives **incremental build tracking**. `ZigBuilder` parses
+> `build.zig.zon` and registers every file and directory listed in `paths` as a
+> build dependency. When any of those files change, Dart's build system
+> automatically re-triggers the Zig build. Make sure `paths` includes all source
+> directories and files your build depends on (e.g. `"src"`, C headers,
+> embedded data files).
+>
+> The `name` field (`.my_package`) is a comptime enum literal and is ignored.
 
 5. Create `zig/src/lib.zig`:
 ```zig
