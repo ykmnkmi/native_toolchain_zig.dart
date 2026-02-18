@@ -1,25 +1,25 @@
 /**
- * tcp_io_uring.c — Linux io_uring backend for the Dart TCP socket library.
+ * tcp_io_uring.c — Linux io_uring backend using raw syscalls.
  *
- * Implements every function declared in tcp.h using io_uring for
- * asynchronous operations.  A single background thread services the
- * completion queue (CQ); the Dart thread submits to the submission
- * queue (SQ) under a mutex.
+ * Implements every function declared in tcp.h using io_uring for async I/O
+ * WITHOUT linking against liburing.  All interaction with the kernel goes
+ * through three syscalls:
+ *
+ *   • io_uring_setup  — create the ring (SQ + CQ shared memory).
+ *   • io_uring_enter  — submit SQEs and/or wait for CQEs.
+ *   • (close)         — tear down the ring fd.
+ *
+ * The SQ and CQ are memory-mapped ring buffers shared between userspace
+ * and the kernel.  We manage the head/tail indices, SQE preparation, and
+ * CQE consumption manually — which is exactly what liburing does under the
+ * hood, minus ~1500 lines of wrapper code and a build dependency.
  *
  * Threading model
  * ───────────────
- *   • Dart thread  — calls the public tcp_* functions.  Synchronous
- *                     socket creation, bind, listen, close, shutdown
- *                     happen inline.  Async operations (connect, read,
- *                     write, accept) prepare an SQE and submit.
- *   • CQ thread    — calls io_uring_wait_cqe in a loop, dispatches
- *                     completions back to Dart via Dart_PostCObject_DL.
- *
- * Handle table
- * ────────────
- * A fixed-size array (MAX_HANDLES) protected by a pthread_mutex stores
- * every open file descriptor.  Handle IDs are 1-based so that 0 is never
- * a valid handle.
+ *   • Dart thread  — prepares SQEs in the submission ring under a mutex,
+ *                     then calls io_uring_enter to submit.
+ *   • CQ thread    — calls io_uring_enter with IORING_ENTER_GETEVENTS to
+ *                     block until completions arrive, then processes CQEs.
  */
 
 #include "tcp.h"
@@ -30,22 +30,325 @@
 
 #define _GNU_SOURCE
 
-#include <liburing.h>
-
 #include <arpa/inet.h>
 #include <errno.h>
+#include <linux/io_uring.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #include "dart_api_dl.h"
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * io_uring syscall wrappers
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * These are thin wrappers around the three io_uring syscalls.  The kernel
+ * headers (<linux/io_uring.h>) provide all the struct definitions and
+ * constants we need — that header ships with every Linux installation and
+ * has no build-time dependencies.
+ */
+
+static int sys_io_uring_setup(unsigned entries, struct io_uring_params* p) {
+    return (int)syscall(__NR_io_uring_setup, entries, p);
+}
+
+static int sys_io_uring_enter(int fd, unsigned to_submit, unsigned min_complete,
+                              unsigned flags, void* sig) {
+    return (int)syscall(__NR_io_uring_enter, fd, to_submit, min_complete,
+                        flags, sig, 0);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Ring buffer management
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * After io_uring_setup returns a file descriptor, we mmap three regions:
+ *
+ *   1. SQ ring  — contains the head/tail indices and an array of SQE
+ *                  indices.  The kernel consumes entries from head; we
+ *                  produce at tail.
+ *
+ *   2. SQE array — the actual submission queue entries (64 bytes each).
+ *                   Indexed by the values in the SQ ring's array.
+ *
+ *   3. CQ ring  — contains the head/tail indices and an inline array of
+ *                  CQEs (16 bytes each).  The kernel produces at tail;
+ *                  we consume from head.
+ *
+ * All index updates use C11 atomics with appropriate memory ordering
+ * because the kernel and userspace access them concurrently.
+ */
+
+typedef struct {
+    int             ring_fd;
+
+    /* ── Submission queue ──────────────────────────────────────────── */
+    void*           sq_ring_ptr;        /* mmap base for SQ ring.        */
+    size_t          sq_ring_size;       /* mmap size for SQ ring.        */
+    uint32_t*       sq_head;            /* Kernel-updated head.          */
+    uint32_t*       sq_tail;            /* We update this.               */
+    uint32_t*       sq_ring_mask;       /* (entries - 1) for wrapping.   */
+    uint32_t*       sq_ring_entries;    /* Total SQ ring slots.          */
+    uint32_t*       sq_flags;           /* Kernel flags (e.g. need wakeup). */
+    uint32_t*       sq_array;           /* Indirection: sq_array[i] → sqe index. */
+
+    struct io_uring_sqe* sqes;          /* SQE array (separate mmap).    */
+    size_t          sqes_size;          /* mmap size for SQEs.           */
+
+    /* ── Completion queue ──────────────────────────────────────────── */
+    void*           cq_ring_ptr;        /* mmap base for CQ ring.        */
+    size_t          cq_ring_size;       /* mmap size for CQ ring.        */
+    uint32_t*       cq_head;            /* We update this after consuming.*/
+    uint32_t*       cq_tail;            /* Kernel-updated tail.          */
+    uint32_t*       cq_ring_mask;
+    uint32_t*       cq_ring_entries;
+
+    struct io_uring_cqe* cqes;          /* Inline in the CQ ring mmap.   */
+} Ring;
+
+/**
+ * Initialize an io_uring ring with @p entries slots.
+ *
+ * Returns 0 on success, -errno on failure.
+ */
+static int ring_init(Ring* ring, unsigned entries) {
+    memset(ring, 0, sizeof(*ring));
+    ring->ring_fd = -1;
+
+    struct io_uring_params params;
+    memset(&params, 0, sizeof(params));
+
+    int fd = sys_io_uring_setup(entries, &params);
+    if (fd < 0) return -errno;
+
+    ring->ring_fd = fd;
+
+    /*
+     * Map the SQ ring.  The SQ ring region contains the index array
+     * plus the head/tail/mask/entries/flags metadata at offsets given
+     * by params.sq_off.
+     */
+    ring->sq_ring_size = params.sq_off.array +
+                         params.sq_entries * sizeof(uint32_t);
+    ring->sq_ring_ptr  = mmap(NULL, ring->sq_ring_size,
+                              PROT_READ | PROT_WRITE,
+                              MAP_SHARED | MAP_POPULATE,
+                              fd, IORING_OFF_SQ_RING);
+    if (ring->sq_ring_ptr == MAP_FAILED) goto fail;
+
+    /* Locate the metadata fields within the SQ ring mmap. */
+    uint8_t* sq = (uint8_t*)ring->sq_ring_ptr;
+    ring->sq_head         = (uint32_t*)(sq + params.sq_off.head);
+    ring->sq_tail         = (uint32_t*)(sq + params.sq_off.tail);
+    ring->sq_ring_mask    = (uint32_t*)(sq + params.sq_off.ring_mask);
+    ring->sq_ring_entries = (uint32_t*)(sq + params.sq_off.ring_entries);
+    ring->sq_flags        = (uint32_t*)(sq + params.sq_off.flags);
+    ring->sq_array        = (uint32_t*)(sq + params.sq_off.array);
+
+    /*
+     * Map the SQE array.  This is a separate mmap region from the SQ
+     * ring metadata.  Each SQE is 64 bytes.
+     */
+    ring->sqes_size = params.sq_entries * sizeof(struct io_uring_sqe);
+    ring->sqes      = mmap(NULL, ring->sqes_size,
+                           PROT_READ | PROT_WRITE,
+                           MAP_SHARED | MAP_POPULATE,
+                           fd, IORING_OFF_SQES);
+    if (ring->sqes == MAP_FAILED) goto fail;
+
+    /*
+     * Map the CQ ring.  CQEs are inline in this region (not a separate
+     * mmap like SQEs).  The kernel may allocate more CQ entries than SQ
+     * entries — use params.cq_entries, not params.sq_entries.
+     */
+    ring->cq_ring_size = params.cq_off.cqes +
+                         params.cq_entries * sizeof(struct io_uring_cqe);
+    ring->cq_ring_ptr  = mmap(NULL, ring->cq_ring_size,
+                              PROT_READ | PROT_WRITE,
+                              MAP_SHARED | MAP_POPULATE,
+                              fd, IORING_OFF_CQ_RING);
+    if (ring->cq_ring_ptr == MAP_FAILED) goto fail;
+
+    uint8_t* cq = (uint8_t*)ring->cq_ring_ptr;
+    ring->cq_head         = (uint32_t*)(cq + params.cq_off.head);
+    ring->cq_tail         = (uint32_t*)(cq + params.cq_off.tail);
+    ring->cq_ring_mask    = (uint32_t*)(cq + params.cq_off.ring_mask);
+    ring->cq_ring_entries = (uint32_t*)(cq + params.cq_off.ring_entries);
+    ring->cqes            = (struct io_uring_cqe*)(cq + params.cq_off.cqes);
+
+    /*
+     * Initialize the SQ array to identity mapping: sq_array[i] = i.
+     * This means SQE index N is always at position N in the ring.
+     * liburing does this same thing in io_uring_queue_init.
+     */
+    for (unsigned i = 0; i < params.sq_entries; i++) {
+        ring->sq_array[i] = i;
+    }
+
+    return 0;
+
+fail:
+    if (ring->sq_ring_ptr && ring->sq_ring_ptr != MAP_FAILED)
+        munmap(ring->sq_ring_ptr, ring->sq_ring_size);
+    if (ring->sqes && (void*)ring->sqes != MAP_FAILED)
+        munmap(ring->sqes, ring->sqes_size);
+    if (ring->cq_ring_ptr && ring->cq_ring_ptr != MAP_FAILED)
+        munmap(ring->cq_ring_ptr, ring->cq_ring_size);
+    close(fd);
+    return -ENOMEM;
+}
+
+/** Tear down the ring: unmap all regions and close the fd. */
+static void ring_destroy(Ring* ring) {
+    if (ring->sq_ring_ptr && ring->sq_ring_ptr != MAP_FAILED)
+        munmap(ring->sq_ring_ptr, ring->sq_ring_size);
+    if (ring->sqes && (void*)ring->sqes != MAP_FAILED)
+        munmap(ring->sqes, ring->sqes_size);
+    if (ring->cq_ring_ptr && ring->cq_ring_ptr != MAP_FAILED)
+        munmap(ring->cq_ring_ptr, ring->cq_ring_size);
+    if (ring->ring_fd >= 0)
+        close(ring->ring_fd);
+    memset(ring, 0, sizeof(*ring));
+    ring->ring_fd = -1;
+}
+
+/**
+ * Get the next available SQE, or NULL if the submission queue is full.
+ *
+ * This reads the kernel's head (where it has consumed up to) and our
+ * tail (where we'll write next).  If tail - head == entries, the ring
+ * is full.
+ */
+static struct io_uring_sqe* ring_get_sqe(Ring* ring) {
+    uint32_t head = atomic_load_explicit((_Atomic uint32_t*)ring->sq_head,
+                                         memory_order_acquire);
+    uint32_t tail = *ring->sq_tail;
+    uint32_t mask = *ring->sq_ring_mask;
+
+    if (tail - head >= *ring->sq_ring_entries) {
+        return NULL; /* SQ is full. */
+    }
+
+    struct io_uring_sqe* sqe = &ring->sqes[tail & mask];
+    memset(sqe, 0, sizeof(*sqe));
+    return sqe;
+}
+
+/**
+ * Advance the SQ tail and submit all pending SQEs to the kernel.
+ *
+ * The tail update must use release ordering so the kernel sees the
+ * SQE contents before seeing the updated tail.  Then we call
+ * io_uring_enter to kick the kernel to process submissions.
+ *
+ * Returns the number of SQEs submitted, or -errno on failure.
+ */
+static int ring_submit(Ring* ring) {
+    uint32_t tail = *ring->sq_tail + 1;
+    atomic_store_explicit((_Atomic uint32_t*)ring->sq_tail, tail,
+                          memory_order_release);
+
+    int ret = sys_io_uring_enter(ring->ring_fd, 1, 0, 0, NULL);
+    if (ret < 0) return -errno;
+    return ret;
+}
+
+/**
+ * Wait for at least one CQE to become available, then return it.
+ *
+ * Returns 0 on success (CQE pointer written to *cqe_out), or -errno.
+ * The caller must call ring_cqe_seen after processing the CQE.
+ */
+static int ring_wait_cqe(Ring* ring, struct io_uring_cqe** cqe_out) {
+    for (;;) {
+        uint32_t head = atomic_load_explicit((_Atomic uint32_t*)ring->cq_head,
+                                             memory_order_acquire);
+        uint32_t tail = atomic_load_explicit((_Atomic uint32_t*)ring->cq_tail,
+                                             memory_order_acquire);
+
+        if (head != tail) {
+            /* At least one CQE is ready. */
+            *cqe_out = &ring->cqes[head & *ring->cq_ring_mask];
+            return 0;
+        }
+
+        /*
+         * No CQEs available — ask the kernel to wake us when there's at
+         * least one completion.  IORING_ENTER_GETEVENTS makes the syscall
+         * block until min_complete CQEs are available.
+         */
+        int ret = sys_io_uring_enter(ring->ring_fd, 0, 1,
+                                     IORING_ENTER_GETEVENTS, NULL);
+        if (ret < 0) {
+            if (errno == EINTR) continue;
+            return -errno;
+        }
+    }
+}
+
+/** Mark a CQE as consumed, advancing the CQ head. */
+static void ring_cqe_seen(Ring* ring) {
+    uint32_t head = *ring->cq_head + 1;
+    atomic_store_explicit((_Atomic uint32_t*)ring->cq_head, head,
+                          memory_order_release);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * SQE preparation helpers — equivalent to liburing's io_uring_prep_*
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Each function fills in the fields of a pre-zeroed SQE for a specific
+ * operation.  The SQE struct layout is defined in <linux/io_uring.h>.
+ */
+
+static void sqe_prep_connect(struct io_uring_sqe* sqe, int fd,
+                              const struct sockaddr* addr, socklen_t addrlen) {
+    sqe->opcode  = IORING_OP_CONNECT;
+    sqe->fd      = fd;
+    sqe->addr    = (uint64_t)(uintptr_t)addr;
+    sqe->off     = addrlen;
+}
+
+static void sqe_prep_recv(struct io_uring_sqe* sqe, int fd,
+                           void* buf, size_t len, int flags) {
+    sqe->opcode    = IORING_OP_RECV;
+    sqe->fd        = fd;
+    sqe->addr      = (uint64_t)(uintptr_t)buf;
+    sqe->len       = (uint32_t)len;
+    sqe->msg_flags = (uint32_t)flags;
+}
+
+static void sqe_prep_send(struct io_uring_sqe* sqe, int fd,
+                           const void* buf, size_t len, int flags) {
+    sqe->opcode    = IORING_OP_SEND;
+    sqe->fd        = fd;
+    sqe->addr      = (uint64_t)(uintptr_t)buf;
+    sqe->len       = (uint32_t)len;
+    sqe->msg_flags = (uint32_t)flags;
+}
+
+static void sqe_prep_accept(struct io_uring_sqe* sqe, int fd) {
+    sqe->opcode       = IORING_OP_ACCEPT;
+    sqe->fd           = fd;
+    sqe->addr         = 0;     /* No output sockaddr needed. */
+    sqe->addr2        = 0;
+    sqe->accept_flags = 0;
+}
+
+static void sqe_prep_nop(struct io_uring_sqe* sqe) {
+    sqe->opcode = IORING_OP_NOP;
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * Constants
@@ -67,17 +370,12 @@ typedef enum {
     OP_SHUTDOWN,        /* Sentinel to stop the CQ thread. */
 } OpType;
 
-/**
- * Per-operation context.  Heap-allocated before each async operation,
- * set as the SQE user_data, and freed after the CQE has been fully
- * processed (including partial-write reissues).
- */
 typedef struct IoContext {
     OpType      op;
     int64_t     request_id;
     int64_t     send_port;
     int64_t     handle_id;
-    int         fd;             /* Cached copy of the socket fd. */
+    int         fd;
 
     union {
         /* OP_CONNECT — sockaddr must survive until the CQE arrives. */
@@ -94,12 +392,10 @@ typedef struct IoContext {
 
         /* OP_WRITE */
         struct {
-            uint8_t*    buffer;       /* Owned copy of write data. */
+            uint8_t*    buffer;
             int64_t     total_len;
             int64_t     total_written;
         } write;
-
-        /* OP_ACCEPT — nothing extra; fd comes back in CQE res. */
     };
 } IoContext;
 
@@ -117,7 +413,7 @@ typedef struct {
 static bool             g_initialized = false;
 static pthread_mutex_t  g_init_lock   = PTHREAD_MUTEX_INITIALIZER;
 
-static struct io_uring  g_ring;
+static Ring             g_ring;
 static pthread_mutex_t  g_submit_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t        g_thread;
 static bool             g_thread_running = false;
@@ -141,7 +437,6 @@ static void dart_free_callback(void* isolate_data, void* peer) {
     free(peer);
 }
 
-/** Post [request_id, result, NULL] to @p send_port. */
 static void post_result(int64_t send_port, int64_t request_id, int64_t result) {
     Dart_CObject c_id     = { .type = Dart_CObject_kInt64, .value.as_int64 = request_id };
     Dart_CObject c_result = { .type = Dart_CObject_kInt64, .value.as_int64 = result };
@@ -156,8 +451,6 @@ static void post_result(int64_t send_port, int64_t request_id, int64_t result) {
     Dart_PostCObject_DL(send_port, &message);
 }
 
-/** Post [request_id, result, Uint8List] to @p send_port.  Ownership of
- *  @p data transfers to Dart. */
 static void post_result_with_data(int64_t send_port, int64_t request_id,
                                   int64_t result, uint8_t* data, intptr_t length) {
     Dart_CObject c_id     = { .type = Dart_CObject_kInt64, .value.as_int64 = request_id };
@@ -184,7 +477,6 @@ static void post_result_with_data(int64_t send_port, int64_t request_id,
  * Handle table
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-/** Allocate a handle entry.  Returns a 1-based ID (0 on failure). */
 static int64_t handle_alloc(int fd, int64_t send_port, bool is_listener) {
     pthread_mutex_lock(&g_handles_lock);
 
@@ -203,7 +495,6 @@ static int64_t handle_alloc(int fd, int64_t send_port, bool is_listener) {
     return 0;
 }
 
-/** Free a handle entry. */
 static void handle_free(int64_t id) {
     if (id < 1 || id > MAX_HANDLES) return;
     int idx = (int)(id - 1);
@@ -216,7 +507,6 @@ static void handle_free(int64_t id) {
     pthread_mutex_unlock(&g_handles_lock);
 }
 
-/** Look up the fd for a handle.  Returns -1 on failure. */
 static int handle_get_fd(int64_t id) {
     if (id < 1 || id > MAX_HANDLES) return -1;
     int idx = (int)(id - 1);
@@ -227,7 +517,6 @@ static int handle_get_fd(int64_t id) {
     return fd;
 }
 
-/** Look up the Dart send port for a handle.  Returns 0 on failure. */
 static int64_t handle_get_send_port(int64_t id) {
     if (id < 1 || id > MAX_HANDLES) return 0;
     int idx = (int)(id - 1);
@@ -239,13 +528,9 @@ static int64_t handle_get_send_port(int64_t id) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * Socket helpers
+ * Sockaddr helpers
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-/**
- * Build a sockaddr from raw address bytes + port.
- * Returns the total length, or 0 on failure.
- */
 static socklen_t build_sockaddr(const uint8_t* addr, int64_t addr_len,
                                 int64_t port, struct sockaddr_storage* out) {
     memset(out, 0, sizeof(*out));
@@ -267,46 +552,43 @@ static socklen_t build_sockaddr(const uint8_t* addr, int64_t addr_len,
     return 0;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Thread-safe SQE submit helper
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
 /**
- * Submit an SQE that has already been prepared.
+ * Acquire the submit lock, get an SQE, let the caller's prep callback
+ * fill it, set user_data to @p ctx, submit, and release the lock.
  *
- * Must be called with g_submit_lock held.  Returns true on success.
+ * Returns true on success.
  */
-static bool ring_submit_locked(void) {
-    int ret = io_uring_submit(&g_ring);
-    return ret >= 0;
-}
+typedef void (*SqePrepFn)(struct io_uring_sqe* sqe, void* arg);
 
-/**
- * Get an SQE, prepare it, and submit.  Thread-safe helper.
- * The caller's prep_fn fills in the SQE.  Returns true on success.
- */
-typedef void (*PrepFn)(struct io_uring_sqe* sqe, void* arg);
-
-static bool ring_submit(PrepFn prep, void* arg) {
+static bool submit_sqe(SqePrepFn prep, void* arg, IoContext* ctx) {
     pthread_mutex_lock(&g_submit_lock);
 
-    struct io_uring_sqe* sqe = io_uring_get_sqe(&g_ring);
+    struct io_uring_sqe* sqe = ring_get_sqe(&g_ring);
     if (!sqe) {
         pthread_mutex_unlock(&g_submit_lock);
         return false;
     }
 
     prep(sqe, arg);
-    bool ok = ring_submit_locked();
+    sqe->user_data = (uint64_t)(uintptr_t)ctx;
 
+    int ret = ring_submit(&g_ring);
     pthread_mutex_unlock(&g_submit_lock);
-    return ok;
+
+    return ret >= 0;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * CQ completion handler — runs on the CQ thread
+ * CQ completion handler
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 static void handle_completion(IoContext* ctx, int32_t res) {
     switch (ctx->op) {
 
-    /* ─── Connect ─────────────────────────────────────────────────────── */
     case OP_CONNECT: {
         if (res < 0) {
             close(ctx->fd);
@@ -327,13 +609,8 @@ static void handle_completion(IoContext* ctx, int32_t res) {
         return;
     }
 
-    /* ─── Read ────────────────────────────────────────────────────────── */
     case OP_READ: {
         if (res <= 0) {
-            /*
-             * res == 0: graceful close (FIN received).
-             * res <  0: error (negated errno).
-             */
             int64_t code = (res == 0 || res == -ECONNRESET || res == -EPIPE)
                                ? TCP_ERR_CLOSED
                                : TCP_ERR_READ_FAILED;
@@ -352,7 +629,6 @@ static void handle_completion(IoContext* ctx, int32_t res) {
         return;
     }
 
-    /* ─── Write ───────────────────────────────────────────────────────── */
     case OP_WRITE: {
         if (res < 0) {
             free(ctx->write.buffer);
@@ -369,7 +645,7 @@ static void handle_completion(IoContext* ctx, int32_t res) {
             int64_t remaining = ctx->write.total_len - offset;
 
             pthread_mutex_lock(&g_submit_lock);
-            struct io_uring_sqe* sqe = io_uring_get_sqe(&g_ring);
+            struct io_uring_sqe* sqe = ring_get_sqe(&g_ring);
 
             if (!sqe) {
                 pthread_mutex_unlock(&g_submit_lock);
@@ -379,11 +655,12 @@ static void handle_completion(IoContext* ctx, int32_t res) {
                 return;
             }
 
-            io_uring_prep_send(sqe, ctx->fd,
-                               ctx->write.buffer + offset,
-                               (size_t)remaining, MSG_NOSIGNAL);
-            io_uring_sqe_set_data(sqe, ctx);
-            ring_submit_locked();
+            sqe_prep_send(sqe, ctx->fd,
+                          ctx->write.buffer + offset,
+                          (size_t)remaining, MSG_NOSIGNAL);
+            sqe->user_data = (uint64_t)(uintptr_t)ctx;
+
+            ring_submit(&g_ring);
             pthread_mutex_unlock(&g_submit_lock);
 
             /* Don't free ctx — reused for the next completion. */
@@ -398,7 +675,6 @@ static void handle_completion(IoContext* ctx, int32_t res) {
         return;
     }
 
-    /* ─── Accept ──────────────────────────────────────────────────────── */
     case OP_ACCEPT: {
         if (res < 0) {
             post_result(ctx->send_port, ctx->request_id, TCP_ERR_ACCEPT_FAILED);
@@ -421,7 +697,6 @@ static void handle_completion(IoContext* ctx, int32_t res) {
     }
 
     case OP_SHUTDOWN:
-        /* Handled in the CQ thread loop — should never reach here. */
         free(ctx);
         return;
     }
@@ -437,16 +712,15 @@ static void* cq_thread_proc(void* param) {
     for (;;) {
         struct io_uring_cqe* cqe = NULL;
 
-        int ret = io_uring_wait_cqe(&g_ring, &cqe);
+        int ret = ring_wait_cqe(&g_ring, &cqe);
         if (ret < 0) {
-            /* EINTR is possible during signal delivery — retry. */
             if (ret == -EINTR) continue;
             break;
         }
 
-        IoContext* ctx = io_uring_cqe_get_data(cqe);
+        IoContext* ctx = (IoContext*)(uintptr_t)cqe->user_data;
         int32_t   res = cqe->res;
-        io_uring_cqe_seen(&g_ring, cqe);
+        ring_cqe_seen(&g_ring);
 
         if (!ctx) continue;
 
@@ -485,8 +759,8 @@ TCP_EXPORT void tcp_init(void* dart_api_dl) {
         g_handles[i].in_use = false;
     }
 
-    /* io_uring. */
-    int ret = io_uring_queue_init(RING_SIZE, &g_ring, 0);
+    /* io_uring ring buffer. */
+    int ret = ring_init(&g_ring, RING_SIZE);
     if (ret < 0) {
         pthread_mutex_unlock(&g_init_lock);
         return;
@@ -494,7 +768,7 @@ TCP_EXPORT void tcp_init(void* dart_api_dl) {
 
     /* CQ worker thread. */
     if (pthread_create(&g_thread, NULL, cq_thread_proc, NULL) != 0) {
-        io_uring_queue_exit(&g_ring);
+        ring_destroy(&g_ring);
         pthread_mutex_unlock(&g_init_lock);
         return;
     }
@@ -519,11 +793,11 @@ TCP_EXPORT void tcp_destroy(void) {
             ctx->op = OP_SHUTDOWN;
 
             pthread_mutex_lock(&g_submit_lock);
-            struct io_uring_sqe* sqe = io_uring_get_sqe(&g_ring);
+            struct io_uring_sqe* sqe = ring_get_sqe(&g_ring);
             if (sqe) {
-                io_uring_prep_nop(sqe);
-                io_uring_sqe_set_data(sqe, ctx);
-                io_uring_submit(&g_ring);
+                sqe_prep_nop(sqe);
+                sqe->user_data = (uint64_t)(uintptr_t)ctx;
+                ring_submit(&g_ring);
             } else {
                 free(ctx);
             }
@@ -545,58 +819,54 @@ TCP_EXPORT void tcp_destroy(void) {
     }
     pthread_mutex_unlock(&g_handles_lock);
 
-    io_uring_queue_exit(&g_ring);
+    ring_destroy(&g_ring);
 
     g_initialized = false;
     pthread_mutex_unlock(&g_init_lock);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * Connection operations
+ * SQE prep callbacks — used with submit_sqe
  * ═══════════════════════════════════════════════════════════════════════════ */
-
-/* ── prep callbacks for ring_submit ─────────────────────────────────────── */
 
 struct ConnectArgs { IoContext* ctx; };
 
 static void prep_connect(struct io_uring_sqe* sqe, void* arg) {
     struct ConnectArgs* a = arg;
-    io_uring_prep_connect(sqe, a->ctx->fd,
-                          (struct sockaddr*)&a->ctx->connect.remote,
-                          a->ctx->connect.remote_len);
-    io_uring_sqe_set_data(sqe, a->ctx);
+    sqe_prep_connect(sqe, a->ctx->fd,
+                     (struct sockaddr*)&a->ctx->connect.remote,
+                     a->ctx->connect.remote_len);
 }
 
 struct RecvArgs { IoContext* ctx; };
 
 static void prep_recv(struct io_uring_sqe* sqe, void* arg) {
     struct RecvArgs* a = arg;
-    io_uring_prep_recv(sqe, a->ctx->fd,
-                       a->ctx->read.buffer,
-                       a->ctx->read.buffer_len, 0);
-    io_uring_sqe_set_data(sqe, a->ctx);
+    sqe_prep_recv(sqe, a->ctx->fd,
+                  a->ctx->read.buffer,
+                  a->ctx->read.buffer_len, 0);
 }
 
 struct SendArgs { IoContext* ctx; };
 
 static void prep_send(struct io_uring_sqe* sqe, void* arg) {
     struct SendArgs* a = arg;
-    io_uring_prep_send(sqe, a->ctx->fd,
-                       a->ctx->write.buffer,
-                       (size_t)a->ctx->write.total_len,
-                       MSG_NOSIGNAL);
-    io_uring_sqe_set_data(sqe, a->ctx);
+    sqe_prep_send(sqe, a->ctx->fd,
+                  a->ctx->write.buffer,
+                  (size_t)a->ctx->write.total_len,
+                  MSG_NOSIGNAL);
 }
 
 struct AcceptArgs { IoContext* ctx; };
 
 static void prep_accept(struct io_uring_sqe* sqe, void* arg) {
     struct AcceptArgs* a = arg;
-    io_uring_prep_accept(sqe, a->ctx->fd, NULL, NULL, 0);
-    io_uring_sqe_set_data(sqe, a->ctx);
+    sqe_prep_accept(sqe, a->ctx->fd);
 }
 
-/* ── public API ─────────────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Connection operations
+ * ═══════════════════════════════════════════════════════════════════════════ */
 
 TCP_EXPORT int64_t tcp_connect(
     int64_t send_port,
@@ -633,11 +903,10 @@ TCP_EXPORT int64_t tcp_connect(
             return TCP_ERR_BIND_FAILED;
         }
     } else if (source_port != 0) {
-        /* Caller wants a specific source port but any address. */
         struct sockaddr_storage bind_sa;
         memset(&bind_sa, 0, sizeof(bind_sa));
-
         socklen_t bind_len;
+
         if (af == AF_INET) {
             struct sockaddr_in* sa = (struct sockaddr_in*)&bind_sa;
             sa->sin_family = AF_INET;
@@ -667,7 +936,6 @@ TCP_EXPORT int64_t tcp_connect(
     ctx->request_id = request_id;
     ctx->send_port  = send_port;
     ctx->fd         = fd;
-
     ctx->connect.remote_len = build_sockaddr(addr, addr_len, port,
                                              &ctx->connect.remote);
     if (ctx->connect.remote_len == 0) {
@@ -677,7 +945,7 @@ TCP_EXPORT int64_t tcp_connect(
     }
 
     struct ConnectArgs args = { .ctx = ctx };
-    if (!ring_submit(prep_connect, &args)) {
+    if (!submit_sqe(prep_connect, &args, ctx)) {
         close(fd);
         free(ctx);
         return TCP_ERR_CONNECT_FAILED;
@@ -713,7 +981,7 @@ TCP_EXPORT int64_t tcp_read(int64_t request_id, int64_t handle) {
     ctx->read.buffer_len = READ_BUFFER_SIZE;
 
     struct RecvArgs args = { .ctx = ctx };
-    if (!ring_submit(prep_recv, &args)) {
+    if (!submit_sqe(prep_recv, &args, ctx)) {
         free(buffer);
         free(ctx);
         return TCP_ERR_READ_FAILED;
@@ -739,7 +1007,6 @@ TCP_EXPORT int64_t tcp_write(
 
     if (!data || count <= 0) return TCP_ERR_INVALID_ARGUMENT;
 
-    /* Copy data — the Dart caller frees their buffer immediately. */
     size_t write_len = (size_t)count;
     uint8_t* buf = malloc(write_len);
     if (!buf) return TCP_ERR_OUT_OF_MEMORY;
@@ -761,7 +1028,7 @@ TCP_EXPORT int64_t tcp_write(
     ctx->write.total_written = 0;
 
     struct SendArgs args = { .ctx = ctx };
-    if (!ring_submit(prep_send, &args)) {
+    if (!submit_sqe(prep_send, &args, ctx)) {
         free(buf);
         free(ctx);
         return TCP_ERR_WRITE_FAILED;
@@ -795,11 +1062,6 @@ TCP_EXPORT int64_t tcp_close(int64_t request_id, int64_t handle) {
     int64_t send_port = handle_get_send_port(handle);
     if (send_port == 0) return TCP_ERR_INVALID_HANDLE;
 
-    /*
-     * Close synchronously.  Any pending io_uring operations on this fd
-     * will complete with -ECANCELED or -EBADF, which the CQ thread
-     * handles normally (posting errors to Dart, freeing contexts).
-     */
     close(fd);
     handle_free(handle);
 
@@ -831,7 +1093,6 @@ TCP_EXPORT int64_t tcp_listen(
     int fd = socket(af, SOCK_STREAM, IPPROTO_TCP);
     if (fd < 0) return TCP_ERR_BIND_FAILED;
 
-    /* Socket options. */
     if (shared) {
         int val = 1;
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
@@ -843,7 +1104,6 @@ TCP_EXPORT int64_t tcp_listen(
         setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &val, sizeof(val));
     }
 
-    /* Bind. */
     struct sockaddr_storage bind_sa;
     socklen_t bind_len = build_sockaddr(addr, addr_len, port, &bind_sa);
     if (bind_len == 0) {
@@ -856,7 +1116,6 @@ TCP_EXPORT int64_t tcp_listen(
         return TCP_ERR_BIND_FAILED;
     }
 
-    /* Listen. */
     int bl = (backlog > 0) ? (int)backlog : SOMAXCONN;
     if (listen(fd, bl) < 0) {
         close(fd);
@@ -885,14 +1144,14 @@ TCP_EXPORT int64_t tcp_accept(int64_t request_id, int64_t listener_handle) {
     IoContext* ctx = calloc(1, sizeof(IoContext));
     if (!ctx) return TCP_ERR_OUT_OF_MEMORY;
 
-    ctx->op              = OP_ACCEPT;
-    ctx->request_id      = request_id;
-    ctx->send_port       = send_port;
-    ctx->handle_id       = listener_handle;
-    ctx->fd              = fd;
+    ctx->op         = OP_ACCEPT;
+    ctx->request_id = request_id;
+    ctx->send_port  = send_port;
+    ctx->handle_id  = listener_handle;
+    ctx->fd         = fd;
 
     struct AcceptArgs args = { .ctx = ctx };
-    if (!ring_submit(prep_accept, &args)) {
+    if (!submit_sqe(prep_accept, &args, ctx)) {
         free(ctx);
         return TCP_ERR_ACCEPT_FAILED;
     }
@@ -905,7 +1164,7 @@ TCP_EXPORT int64_t tcp_listener_close(
     int64_t listener_handle,
     bool force
 ) {
-    (void)force; /* Force-close of child connections handled on the Dart side. */
+    (void)force;
 
     if (!g_initialized) return TCP_ERR_NOT_INITIALIZED;
 
@@ -938,12 +1197,10 @@ TCP_EXPORT int64_t tcp_get_local_address(int64_t handle, uint8_t* out_addr) {
     }
 
     if (sa.ss_family == AF_INET) {
-        struct sockaddr_in* s4 = (struct sockaddr_in*)&sa;
-        memcpy(out_addr, &s4->sin_addr, 4);
+        memcpy(out_addr, &((struct sockaddr_in*)&sa)->sin_addr, 4);
         return 4;
     } else if (sa.ss_family == AF_INET6) {
-        struct sockaddr_in6* s6 = (struct sockaddr_in6*)&sa;
-        memcpy(out_addr, &s6->sin6_addr, 16);
+        memcpy(out_addr, &((struct sockaddr_in6*)&sa)->sin6_addr, 16);
         return 16;
     }
 
@@ -982,12 +1239,10 @@ TCP_EXPORT int64_t tcp_get_remote_address(int64_t handle, uint8_t* out_addr) {
     }
 
     if (sa.ss_family == AF_INET) {
-        struct sockaddr_in* s4 = (struct sockaddr_in*)&sa;
-        memcpy(out_addr, &s4->sin_addr, 4);
+        memcpy(out_addr, &((struct sockaddr_in*)&sa)->sin_addr, 4);
         return 4;
     } else if (sa.ss_family == AF_INET6) {
-        struct sockaddr_in6* s6 = (struct sockaddr_in6*)&sa;
-        memcpy(out_addr, &s6->sin6_addr, 16);
+        memcpy(out_addr, &((struct sockaddr_in6*)&sa)->sin6_addr, 16);
         return 16;
     }
 

@@ -23,7 +23,6 @@ pub fn build(b: *std.Build) void {
         root_module.linkSystemLibrary("ws2_32", .{});
     } else if (target.result.os.tag == .linux) {
         root_module.addCSourceFile(.{ .file = b.path("include/tcp_io_uring.c") });
-        root_module.linkSystemLibrary("uring", .{});
     } else {
         root_module.addCSourceFile(.{ .file = b.path("include/tcp_uv.c") });
         root_module.linkSystemLibrary("uv", .{});
