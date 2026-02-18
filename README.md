@@ -17,6 +17,7 @@ Automatically builds and bundles your Zig code with your Dart/Flutter applicatio
 Install [Zig 0.15.0+][zig_download] on your development machine.
 
 ### Installation
+
 ```bash
 dart pub add hooks native_toolchain_zig
 ```
@@ -24,6 +25,7 @@ dart pub add hooks native_toolchain_zig
 ### Project Setup
 
 1. Create your Zig project in `my_project/zig/`:
+
 ```
 my_package/
 ├── hook/
@@ -39,6 +41,7 @@ my_package/
 ```
 
 2. Create `hook/build.dart`:
+
 ```dart
 import 'package:hooks/hooks.dart';
 import 'package:native_toolchain_zig/native_toolchain_zig.dart';
@@ -54,6 +57,7 @@ Future<void> main(List<String> arguments) async {
 ```
 
 3. Create `zig/build.zig`:
+
 ```zig
 const std = @import("std");
 
@@ -152,6 +156,7 @@ Build with: `zig build -Dlinkage=static` or `zig build -Dlinkage=dynamic`
 </details>
 
 4. Create `zig/build.zig.zon`:
+
 ```zig
 .{
     .name = .my_package,
@@ -177,6 +182,7 @@ Build with: `zig build -Dlinkage=static` or `zig build -Dlinkage=dynamic`
 > The `name` field (`.my_package`) is a comptime enum literal and is ignored.
 
 5. Create `zig/src/lib.zig`:
+
 ```zig
 export fn add(a: i32, b: i32) i32 {
     return a + b;
@@ -184,6 +190,7 @@ export fn add(a: i32, b: i32) i32 {
 ```
 
 6. Create Dart bindings in `lib/my_package.dart`:
+
 ```dart
 import 'dart:ffi';
 
@@ -192,6 +199,7 @@ external int add(int a, int b);
 ```
 
 7. Run your app:
+
 ```bash
 dart run
 ```
@@ -201,6 +209,7 @@ dart run
 MIT License - see [LICENSE](LICENSE) for details.
 
 <!-- Badges -->
+
 [pub_badge]: https://img.shields.io/pub/v/native_toolchain_zig
 [pub_link]: https://pub.dev/packages/native_toolchain_zig
 [dart_ci]: https://github.com/ykmnkmi/native_toolchain_zig.dart/actions/workflows/ci.yaml/badge.svg
@@ -209,5 +218,6 @@ MIT License - see [LICENSE](LICENSE) for details.
 [license_link]: https://opensource.org/licenses/MIT
 
 <!-- Links -->
+
 [dart_hooks]: https://dart.dev/tools/hooks
 [zig_download]: https://ziglang.org/download/
