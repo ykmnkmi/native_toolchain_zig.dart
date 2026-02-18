@@ -26,7 +26,6 @@ if (target.result.os.tag == .windows) {
     root_module.linkSystemLibrary("ws2_32", .{});
 } else if (target.result.os.tag == .linux) {
     root_module.addCSourceFile(.{ .file = b.path("include/tcp_io_uring.c") });
-    root_module.linkSystemLibrary("uring", .{});
 } else {
     root_module.addCSourceFile(.{ .file = b.path("include/tcp_uv.c") });
     root_module.linkSystemLibrary("uv", .{});
@@ -51,13 +50,18 @@ reissuing `WSASend` in the completion handler until all bytes are sent.
 
 ### `tcp_io_uring.c` — Linux
 
-Uses `io_uring` for kernel-bypass async I/O. Requires Linux kernel 5.1+.
+Uses `io_uring` for kernel-bypass async I/O via raw syscalls — no `liburing`
+dependency. The only build-time requirement is `<linux/io_uring.h>`, which ships
+with the kernel headers on every Linux system. All ring interaction goes through
+`syscall(__NR_io_uring_setup, ...)` and `syscall(__NR_io_uring_enter, ...)`,
+with the SQ and CQ ring buffers mapped via `mmap` and managed manually using C11
+atomics for head/tail index updates. Requires Linux kernel 5.1+.
 
 Operations are prepared as SQEs from the Dart thread under a submission mutex
-and dispatched with a single `io_uring_submit`. A CQ thread calls
-`io_uring_wait_cqe` and processes completions. Multiple pending operations can
-be batched into one `io_uring_enter` syscall, reducing per-operation overhead
-compared to traditional epoll.
+and dispatched with a single `io_uring_enter`. A CQ thread blocks on
+`io_uring_enter` with `IORING_ENTER_GETEVENTS` and processes completions.
+Multiple pending operations can be batched into one syscall, reducing
+per-operation overhead compared to traditional epoll.
 
 Unlike IOCP, `connect` works on unbound sockets and `accept` returns the new fd
 directly in `cqe->res` without needing a pre-created socket. `MSG_NOSIGNAL` is
