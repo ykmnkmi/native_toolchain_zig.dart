@@ -219,19 +219,19 @@ final class _Connection extends LinkedListEntry<_Connection>
     }
   }
 
-  // TODO(leaf): try to remove copying or update tcp_write.
   @override
   Future<int> write(Uint8List data, [int offset = 0, int? count]) async {
+    var effectiveCount = count ?? data.length - offset;
+
     var response = await service.request((id) {
-      var length = data.length;
-      var pointer = calloc<Uint8>(length);
+      var pointer = calloc<Uint8>(effectiveCount);
 
       try {
-        for (var i = 0; i < length; i++) {
-          pointer[i] = data[i];
+        for (var i = 0; i < effectiveCount; i++) {
+          pointer[i] = data[offset + i];
         }
 
-        var code = tcp_write(id, handle, pointer, offset, length);
+        var code = tcp_write(id, handle, pointer, 0, effectiveCount);
         SocketException.checkResult(code);
       } finally {
         calloc.free(pointer);
