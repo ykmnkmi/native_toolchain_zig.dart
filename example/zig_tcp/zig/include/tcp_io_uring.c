@@ -1093,9 +1093,10 @@ TCP_EXPORT int64_t tcp_listen(
     int fd = socket(af, SOCK_STREAM, IPPROTO_TCP);
     if (fd < 0) return TCP_ERR_BIND_FAILED;
 
+    int val = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
+
     if (shared) {
-        int val = 1;
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
         setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val));
     }
 
