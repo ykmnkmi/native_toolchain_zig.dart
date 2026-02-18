@@ -111,6 +111,7 @@ final class _IOService {
     } catch (error, stackTrace) {
       pending.remove(id);
 
+      // Transition: active → idle.
       if (pending.isEmpty) {
         next = 0;
         receivePort.keepIsolateAlive = false;
