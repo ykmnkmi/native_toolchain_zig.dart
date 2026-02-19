@@ -122,7 +122,8 @@ pub fn build(b: *std.Build) void {
 <details>
 <summary><strong>Select linkage via command line</strong></summary>
 
-To control linkage type via `-Dlinkage=static` or `-Dlinkage=dynamic`:
+To control linkage type via a custom `-Dlinkage` option, first accept it in
+your `build.zig`:
 
 ```zig
 const std = @import("std");
@@ -151,7 +152,23 @@ pub fn build(b: *std.Build) void {
 }
 ```
 
-Build with: `zig build -Dlinkage=static` or `zig build -Dlinkage=dynamic`
+Then pass the flag from Dart via `extraArguments` in `hook/build.dart`:
+
+```dart
+import 'package:hooks/hooks.dart';
+import 'package:native_toolchain_zig/native_toolchain_zig.dart';
+
+Future<void> main(List<String> arguments) async {
+  await build(arguments, (input, output) async {
+    await ZigBuilder(
+      assetName: 'my_package.dart',
+      zigDir: 'zig/',
+      // Forward the linkage option to zig build
+      extraArguments: ['-Dlinkage=static'],
+    ).run(input: input, output: output);
+  });
+}
+```
 
 </details>
 
