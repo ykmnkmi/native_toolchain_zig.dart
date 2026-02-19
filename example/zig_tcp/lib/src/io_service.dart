@@ -1,5 +1,19 @@
 part of '/zig_tcp.dart';
 
+/// Internal interface for objects that own a native handle table slot.
+///
+/// Both [_Connection] and [_Listener] implement this, allowing [_IOService]
+/// to manage native resource lifecycle uniformly - including the GC-release
+/// callback that frees the handle table slot if the Dart object is collected
+/// without an explicit `close()` call.
+///
+/// On process exit, finalizers are NOT guaranteed to run, but the OS
+/// reclaims all file descriptors, sockets, and memory regardless.
+abstract interface class _NativeHandle {
+  /// The 1-based index into the native handle table.
+  int get handle;
+}
+
 /// Per-isolate service that bridges Dart async operations to the native
 /// event loop.
 ///
@@ -27,7 +41,7 @@ final class _IOService {
   _IOService._()
     : receivePort = RawReceivePort(null, 'TCP IO Service'),
       pending = HashMap<int, Completer<_Response>>(),
-      activeHandles = HashSet<Object>(),
+      activeHandles = HashSet<_NativeHandle>(),
       next = 0 {
     // Idempotent on the native side - only the first call across all
     // isolates actually starts the event loop.
@@ -41,9 +55,9 @@ final class _IOService {
   /// In-flight requests awaiting a native completion.
   final HashMap<int, Completer<_Response>> pending;
 
-  /// Number of active handles (connections + listeners) that haven't been
-  /// closed yet. When this drops to zero, the service disposes itself.
-  final HashSet<Object> activeHandles;
+  /// Active handles (connections + listeners) that haven't been closed yet.
+  /// When this drops to zero, the service disposes itself.
+  final HashSet<_NativeHandle> activeHandles;
 
   /// Monotonically increasing request ID, wraps at `0x7FFFFFFF`.
   int next;
@@ -53,20 +67,46 @@ final class _IOService {
   /// to post results for this isolate.
   int get nativePort => receivePort.sendPort.nativePort;
 
+  /// Register a newly created handle and attach a native GC-release
+  /// callback to [handle].
+  ///
   /// Called after a handle-creating operation (connect, bind, accept)
-  /// completes successfully. Increments the active handle count.
-  void register(Object handle) {
+  /// completes successfully. The [tcp_attach_release] call passes the
+  /// Dart object as a `Dart_Handle` to the native side, which creates a
+  /// `Dart_FinalizableHandle` via `Dart_NewFinalizableHandle_DL`. If the
+  /// Dart object is later garbage-collected without an explicit `close()`
+  /// call, the VM invokes the native release callback to close the socket
+  /// and free the handle table slot.
+  ///
+  /// When `close()` IS called, [tcp_close] / [tcp_listener_close] frees
+  /// the slot first (setting `in_use = false`). The finalizer eventually
+  /// fires but sees `in_use == false` and returns immediately - no
+  /// double-free, no use-after-free.
+  ///
+  /// This covers two scenarios:
+  ///
+  ///   1. An isolate exits without closing its handles while other isolates
+  ///      continue running - the GC collects orphaned handles and the
+  ///      finalizer frees the native resources.
+  ///
+  ///   2. A handle becomes unreachable during normal operation (e.g. lost
+  ///      reference without calling close) - the GC eventually collects it.
+  ///
+  /// On process exit, finalizers are NOT guaranteed to run, but the OS
+  /// reclaims all file descriptors, sockets, and memory regardless.
+  void register(_NativeHandle handle) {
     activeHandles.add(handle);
+    tcp_attach_release(handle, handle.handle);
   }
 
   /// Called after a handle-closing operation (close, listener close)
-  /// completes successfully. Decrements the active handle count and
-  /// disposes the service when it reaches zero.
+  /// completes successfully. Removes the handle from the active set and
+  /// disposes the service when no handles remain.
   ///
   /// At this point the close completion has already been received by
   /// [handler], so we're running on the Dart thread - safe to close
   /// the receive port and null out the singleton.
-  void unregister(Object handle) {
+  void unregister(_NativeHandle handle) {
     activeHandles.remove(handle);
 
     if (activeHandles.isEmpty) {

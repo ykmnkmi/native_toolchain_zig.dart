@@ -123,12 +123,13 @@ abstract interface class Listener {
   }
 }
 
-final class _Listener implements Listener {
+final class _Listener implements Listener, _NativeHandle {
   _Listener(this.handle, this.service)
     : connections = LinkedList<_Connection>() {
     service.register(this);
   }
 
+  @override
   final int handle;
 
   final _IOService service;

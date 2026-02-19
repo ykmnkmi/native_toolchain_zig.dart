@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "dart_api.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -26,6 +28,34 @@ extern "C" {
 #else
     #define TCP_EXPORT
 #endif
+
+/* =============================================================================
+ * GC-release support
+ * =============================================================================
+ *
+ * These functions allow Dart's garbage collector to release native handle
+ * table slots when Connection or Listener objects are collected without an
+ * explicit close() call.
+ *
+ * tcp_attach_release is called from the Dart thread immediately after
+ * constructing a _Connection or _Listener.  It receives the Dart object
+ * as a Dart_Handle and creates a Dart_FinalizableHandle that invokes the
+ * native release callback when the object is garbage-collected.
+ *
+ * The release callback is idempotent: if close() already freed the slot,
+ * the callback sees in_use == false and returns immediately.
+ */
+
+/**
+ * Attach a GC-release callback to a Dart object.
+ *
+ * When the Dart object is collected, the VM invokes the internal release
+ * callback which closes the socket and frees the handle table slot.
+ *
+ * @param object   Dart_Handle to the _Connection or _Listener object.
+ * @param handle   1-based index into the native handle table.
+ */
+TCP_EXPORT void tcp_attach_release(Dart_Handle object, int64_t handle);
 
 /* =============================================================================
  * Initialization

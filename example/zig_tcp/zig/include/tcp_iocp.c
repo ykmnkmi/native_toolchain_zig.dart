@@ -265,6 +265,76 @@ static int64_t handle_get_send_port(int64_t id) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+ * GC-release callback
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Called by the Dart VM when a _Connection or _Listener object is garbage-
+ * collected without an explicit close().  Closes the socket and frees the
+ * handle table slot.
+ *
+ * This is a Dart_HandleFinalizer: void(void* isolate_callback_data, void*
+ * peer).  The peer encodes the 1-based handle ID, set when
+ * tcp_attach_release called Dart_NewFinalizableHandle_DL.
+ *
+ * Idempotent: if tcp_close / tcp_listener_close already freed the slot,
+ * in_use is false and we return immediately.  No double-close.
+ *
+ * Thread safety: may be called from any thread the GC runs on.  All
+ * handle table access goes through g_handles_lock.
+ */
+static void release_handle_callback(void* isolate_callback_data, void* peer) {
+    (void)isolate_callback_data;
+
+    int64_t id = (int64_t)(intptr_t)peer;
+    if (id < 1 || id > MAX_HANDLES) return;
+
+    int idx = (int)(id - 1);
+
+    EnterCriticalSection(&g_handles_lock);
+
+    if (!g_handles[idx].in_use) {
+        /* Already closed — normal close() ran before the finalizer. */
+        LeaveCriticalSection(&g_handles_lock);
+        return;
+    }
+
+    SOCKET sock = g_handles[idx].socket;
+    DeleteCriticalSection(&g_handles[idx].lock);
+    g_handles[idx].in_use = false;
+    g_handles[idx].socket = INVALID_SOCKET;
+
+    LeaveCriticalSection(&g_handles_lock);
+
+    if (sock != INVALID_SOCKET) {
+        CancelIoEx((HANDLE)sock, NULL);
+        closesocket(sock);
+    }
+}
+
+/**
+ * Attach a GC-release callback to a Dart object.
+ *
+ * Creates a Dart_FinalizableHandle that ties the Dart object's lifetime
+ * to the native handle table slot.  The VM calls release_handle_callback
+ * when the object is collected.
+ *
+ * Called from the Dart thread in _IOService.register().  The Dart_Handle
+ * is a local handle valid for the duration of this call.
+ *
+ * We do NOT store the returned Dart_FinalizableHandle because deleting
+ * it in tcp_close would require a Dart_Handle parameter.  Not deleting
+ * it is safe: the finalizer fires eventually, sees in_use == false, and
+ * returns immediately.
+ */
+TCP_EXPORT void tcp_attach_release(Dart_Handle object, int64_t handle) {
+    if (handle < 1 || handle > MAX_HANDLES) return;
+
+    void* peer = (void*)(intptr_t)handle;
+
+    Dart_NewFinalizableHandle_DL(object, peer, 0, release_handle_callback);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
  * Winsock extension loader
  * ═══════════════════════════════════════════════════════════════════════════ */
 
@@ -878,8 +948,8 @@ TCP_EXPORT int64_t tcp_listen(
         /* SO_REUSEPORT is not available on Windows; SO_REUSEADDR is sufficient. */
     }
 
-    if (af == AF_INET6 && v6_only) {
-        DWORD val = 1;
+    if (af == AF_INET6) {
+        DWORD val = v6_only ? 1 : 0;
         setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, (char*)&val, sizeof(val));
     }
 

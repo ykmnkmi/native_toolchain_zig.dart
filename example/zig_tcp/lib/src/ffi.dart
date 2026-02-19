@@ -56,6 +56,26 @@ external void tcp_init(Pointer<Void> dart_api_dl);
 @Native<Void Function()>()
 external void tcp_destroy();
 
+/// Attach a native GC-release callback to a Dart [object].
+///
+/// Creates a `Dart_FinalizableHandle` on the native side via
+/// `Dart_NewFinalizableHandle_DL`. When the Dart object is garbage-collected,
+/// the VM invokes the native release callback which closes the socket and
+/// frees the handle table slot for [handle].
+///
+/// This is safe to call even if `close()` is later called explicitly —
+/// `close()` frees the handle table slot first (setting `in_use = false`),
+/// and the finalizer checks `in_use` before doing anything.
+///
+/// The [Handle] FFI type passes a `Dart_Handle` to the native function,
+/// giving it a local reference to the Dart object that the VM can track
+/// for GC purposes.
+///
+/// * [object]\: the Dart `_Connection` or `_Listener` that owns this handle.
+/// * [handle]\: 1-based index into the native handle table.
+@Native<Void Function(Handle, Int64)>()
+external void tcp_attach_release(Object object, int handle);
+
 /// Asynchronously connect to a remote address.
 ///
 /// This function initiates a connection and returns immediately. The actual

@@ -150,17 +150,19 @@ abstract interface class Connection {
     });
 
     // Extract the native handle from the response. The _Connection
-    // constructor handles service.register(this) internally.
+    // constructor calls service.register(this) which also attaches
+    // the GC-release callback.
     return _Connection(response.result, service);
   }
 }
 
 final class _Connection extends LinkedListEntry<_Connection>
-    implements Connection {
+    implements Connection, _NativeHandle {
   _Connection(this.handle, this.service) : closed = false {
     service.register(this);
   }
 
+  @override
   final int handle;
 
   final _IOService service;

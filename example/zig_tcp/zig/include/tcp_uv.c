@@ -69,7 +69,8 @@ typedef enum {
     REQ_LISTEN,
     REQ_ACCEPT,
     REQ_LISTENER_CLOSE,
-    REQ_STOP,           /* Sentinel: stop the event loop. */
+    REQ_RELEASE,         /* GC release of an orphaned handle. */
+    REQ_STOP,            /* Sentinel: stop the event loop. */
 } ReqType;
 
 typedef struct Request {
@@ -106,6 +107,11 @@ typedef struct Request {
         struct {
             bool force;
         } listener_close;
+
+        /* REQ_RELEASE */
+        struct {
+            TcpHandle* tcp_handle;
+        } release;
     };
 
     struct Request* next;
@@ -132,9 +138,29 @@ static void queue_destroy(RequestQueue* q) {
     Request* r = q->head;
     while (r) {
         Request* next = r->next;
+
         if (r->type == REQ_WRITE && r->write.data) {
             free(r->write.data);
         }
+
+        if (r->type == REQ_RELEASE && r->release.tcp_handle) {
+            /*
+             * The loop is dead (uv_loop_close already ran), so we can't
+             * use uv_close.  Close the raw fd directly and free the
+             * struct.  Any remaining libuv internal state is abandoned;
+             * the OS reclaims everything at process exit.
+             */
+            TcpHandle* h = r->release.tcp_handle;
+            if (h->raw_fd != INVALID_FD) {
+#ifdef _WIN32
+                closesocket(h->raw_fd);
+#else
+                close(h->raw_fd);
+#endif
+            }
+            free(h);
+        }
+
         free(r);
         r = next;
     }
@@ -284,6 +310,101 @@ static int64_t handle_get_send_port(int64_t id) {
     int64_t port = g_handles[idx].in_use ? g_handles[idx].handle->send_port : 0;
     uv_mutex_unlock(&g_handles_lock);
     return port;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * GC-release callback
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Called by the Dart VM when a _Connection or _Listener object is garbage-
+ * collected without an explicit close().
+ *
+ * Unlike the IOCP and io_uring backends, we CANNOT close the socket
+ * directly from the finalizer thread.  libuv owns the socket through a
+ * uv_tcp_t handle — closing the raw fd behind libuv's back would corrupt
+ * its internal state and cause use-after-free in the loop thread.
+ *
+ * Instead, we:
+ *   1. Free the handle table slot (under the lock) so no new operations
+ *      can reach this handle via its ID.
+ *   2. Push a REQ_RELEASE request carrying the TcpHandle* pointer onto
+ *      the queue and wake the loop via uv_async_send.
+ *   3. The loop thread calls uv_close() in the REQ_RELEASE handler.
+ *   4. The on_close callback frees the TcpHandle struct (tcp.data is
+ *      NULL, so no Dart result is posted).
+ *
+ * Idempotent: if close() already ran, in_use is false and we return
+ * immediately.
+ *
+ * Thread safety: handle table access is under g_handles_lock.
+ * uv_async_send is documented as thread-safe.
+ */
+static void release_handle_callback(void* isolate_callback_data, void* peer) {
+    (void)isolate_callback_data;
+
+    if (!g_initialized) return;
+
+    int64_t id = (int64_t)(intptr_t)peer;
+    if (id < 1 || id > MAX_HANDLES) return;
+
+    int idx = (int)(id - 1);
+
+    /*
+     * Grab the TcpHandle pointer and free the slot atomically under the
+     * lock.  After this, no Dart thread can look up this handle by ID.
+     */
+    uv_mutex_lock(&g_handles_lock);
+
+    if (!g_handles[idx].in_use) {
+        /* Already closed — normal close() ran before the finalizer. */
+        uv_mutex_unlock(&g_handles_lock);
+        return;
+    }
+
+    TcpHandle* h = g_handles[idx].handle;
+    g_handles[idx].in_use = false;
+    g_handles[idx].handle = NULL;
+
+    uv_mutex_unlock(&g_handles_lock);
+
+    if (!h) return;
+
+    /*
+     * Queue a REQ_RELEASE to close the uv_tcp_t on the loop thread.
+     * We carry the TcpHandle pointer directly since it's no longer
+     * reachable from the handle table.
+     */
+    Request* r = calloc(1, sizeof(Request));
+    if (!r) {
+        /*
+         * Allocation failure in a GC callback — extremely unlikely.
+         * The TcpHandle and its uv_tcp_t leak, but the raw fd will be
+         * reclaimed at process exit.  There's nothing safe we can do
+         * here since we can't call uv_close from this thread.
+         */
+        return;
+    }
+
+    r->type               = REQ_RELEASE;
+    r->release.tcp_handle = h;
+
+    queue_push(&g_queue, r);
+    uv_async_send(&g_async);
+}
+
+/**
+ * Attach a GC-release callback to a Dart object.
+ *
+ * Creates a Dart_FinalizableHandle that ties the Dart object's lifetime
+ * to the native handle.  The VM calls release_handle_callback when the
+ * object is collected, which queues a proper uv_close on the loop thread.
+ */
+TCP_EXPORT void tcp_attach_release(Dart_Handle object, int64_t handle) {
+    if (handle < 1 || handle > MAX_HANDLES) return;
+
+    void* peer = (void*)(intptr_t)handle;
+
+    Dart_NewFinalizableHandle_DL(object, peer, 0, release_handle_callback);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -900,6 +1021,41 @@ static void on_async(uv_async_t* async) {
             h->tcp.data = ctx;
 
             uv_close((uv_handle_t*)&h->tcp, on_close);
+            free(r);
+            break;
+        }
+
+        /* ─── RELEASE (GC cleanup) ───────────────────────────────────── */
+        case REQ_RELEASE: {
+            TcpHandle* h = r->release.tcp_handle;
+            if (!h) {
+                free(r);
+                break;
+            }
+
+            /*
+             * Check if libuv is already closing this handle (shouldn't
+             * happen since we removed it from the table, but defensive).
+             */
+            if (uv_is_closing((uv_handle_t*)&h->tcp)) {
+                free(r);
+                break;
+            }
+
+            /* Stop reading if active — prevents callbacks after close. */
+            if (h->read_pending) {
+                uv_read_stop((uv_stream_t*)&h->tcp);
+                h->read_pending = false;
+            }
+
+            /*
+             * No CloseCtx — on_close will see tcp.data == NULL, skip
+             * handle_free and post_result (we already freed the slot in
+             * the release callback), and just free the TcpHandle.
+             */
+            h->tcp.data = NULL;
+            uv_close((uv_handle_t*)&h->tcp, on_close);
+
             free(r);
             break;
         }

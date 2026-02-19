@@ -528,6 +528,64 @@ static int64_t handle_get_send_port(int64_t id) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+ * GC-release callback
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Called by the Dart VM when a _Connection or _Listener object is garbage-
+ * collected without an explicit close().  Closes the socket and frees the
+ * handle table slot.
+ *
+ * Idempotent: if tcp_close / tcp_listener_close already freed the slot,
+ * in_use is false and we return immediately.
+ *
+ * Thread safety: may be called from any thread the GC runs on.  All
+ * handle table access goes through g_handles_lock.
+ */
+static void release_handle_callback(void* isolate_callback_data, void* peer) {
+    (void)isolate_callback_data;
+
+    int64_t id = (int64_t)(intptr_t)peer;
+    if (id < 1 || id > MAX_HANDLES) return;
+
+    int idx = (int)(id - 1);
+
+    pthread_mutex_lock(&g_handles_lock);
+
+    if (!g_handles[idx].in_use) {
+        /* Already closed — normal close() ran before the finalizer. */
+        pthread_mutex_unlock(&g_handles_lock);
+        return;
+    }
+
+    int fd = g_handles[idx].fd;
+    g_handles[idx].in_use = false;
+    g_handles[idx].fd     = -1;
+
+    pthread_mutex_unlock(&g_handles_lock);
+
+    if (fd >= 0) {
+        close(fd);
+    }
+}
+
+/**
+ * Attach a GC-release callback to a Dart object.
+ *
+ * Creates a Dart_FinalizableHandle that ties the Dart object's lifetime
+ * to the native handle table slot.  The VM calls release_handle_callback
+ * when the object is collected.
+ *
+ * Called from the Dart thread in _IOService.register().
+ */
+TCP_EXPORT void tcp_attach_release(Dart_Handle object, int64_t handle) {
+    if (handle < 1 || handle > MAX_HANDLES) return;
+
+    void* peer = (void*)(intptr_t)handle;
+
+    Dart_NewFinalizableHandle_DL(object, peer, 0, release_handle_callback);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
  * Sockaddr helpers
  * ═══════════════════════════════════════════════════════════════════════════ */
 
