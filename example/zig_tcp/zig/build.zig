@@ -18,12 +18,14 @@ pub fn build(b: *std.Build) void {
         .file = b.path("include/dart_api_dl.c"),
     });
 
-    root_module.addCSourceFile(.{
-        .file = b.path("include/tcp.c"),
-    });
-
     if (target.result.os.tag == .windows) {
+        root_module.addCSourceFile(.{ .file = b.path("include/tcp_iocp.c") });
         root_module.linkSystemLibrary("ws2_32", .{});
+    } else if (target.result.os.tag == .linux) {
+        root_module.addCSourceFile(.{ .file = b.path("include/tcp_io_uring.c") });
+    } else {
+        root_module.addCSourceFile(.{ .file = b.path("include/tcp_uv.c") });
+        root_module.linkSystemLibrary("uv", .{});
     }
 
     const dynamic_lib = b.addLibrary(.{
