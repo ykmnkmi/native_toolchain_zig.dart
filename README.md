@@ -221,6 +221,10 @@ external int add(int a, int b);
 dart run
 ```
 
+## Example
+
+An example can be found in [/example/][example].
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
@@ -231,6 +235,7 @@ MIT License - see [LICENSE](LICENSE) for details.
 [pub_link]: https://pub.dev/packages/native_toolchain_zig
 [dart_ci]: https://github.com/ykmnkmi/native_toolchain_zig.dart/actions/workflows/ci.yaml/badge.svg
 [dart_ci_link]: https://github.com/ykmnkmi/native_toolchain_zig.dart/actions
+[example]: https://github.com/ykmnkmi/native_toolchain_zig.dart/tree/main/example
 [license_badge]: https://img.shields.io/badge/license-MIT-purple.svg
 [license_link]: https://opensource.org/licenses/MIT
 
