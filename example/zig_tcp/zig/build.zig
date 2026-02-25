@@ -24,8 +24,8 @@ pub fn build(b: *std.Build) void {
     } else if (target.result.os.tag == .linux) {
         root_module.addCSourceFile(.{ .file = b.path("include/tcp_io_uring.c") });
     } else {
-        root_module.addCSourceFile(.{ .file = b.path("include/tcp_uv.c") });
-        root_module.linkSystemLibrary("uv", .{});
+        const xev_dep = b.dependency("libxev", .{ .target = target, .optimize = optimize });
+        root_module.addImport("xev", xev_dep.module("xev"));
     }
 
     const dynamic_lib = b.addLibrary(.{
@@ -36,11 +36,11 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(dynamic_lib);
 
-    // const static_lib = b.addLibrary(.{
-    //     .name = "zig_tcp",
-    //     .linkage = .static,
-    //     .root_module = root_module,
-    // });
+    const static_lib = b.addLibrary(.{
+        .name = "zig_tcp",
+        .linkage = .static,
+        .root_module = root_module,
+    });
 
-    // b.installArtifact(static_lib);
+    b.installArtifact(static_lib);
 }
