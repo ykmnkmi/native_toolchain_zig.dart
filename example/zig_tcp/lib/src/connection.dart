@@ -149,15 +149,11 @@ abstract interface class Connection {
       }
     });
 
-    // Extract the native handle from the response. The _Connection
-    // constructor calls service.register(this) which also attaches
-    // the GC-release callback.
     return _Connection(response.result, service);
   }
 }
 
-final class _Connection extends LinkedListEntry<_Connection>
-    implements Connection, _NativeHandle {
+final class _Connection implements Connection, _NativeHandle {
   _Connection(this.handle, this.service) : closed = false {
     service.register(this);
   }
@@ -168,6 +164,8 @@ final class _Connection extends LinkedListEntry<_Connection>
   final _IOService service;
 
   bool closed;
+
+  _Listener? _listener;
 
   @override
   late final InternetAddress address = _getLocalAddress(handle);
@@ -263,11 +261,7 @@ final class _Connection extends LinkedListEntry<_Connection>
     });
 
     closed = true;
-
-    if (list != null) {
-      unlink();
-    }
-
+    _listener?.connections.remove(this);
     service.unregister(this);
   }
 }

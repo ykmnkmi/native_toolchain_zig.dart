@@ -54,8 +54,9 @@ abstract interface class Listener {
   /// Close the listener.
   ///
   /// If [force] is `true`, all connections that were accepted from this
-  /// listener and haven't been closed yet are closed as well. Any pending
-  /// [accept] call completes with an error.
+  /// listener and haven't been closed yet are closed concurrently after
+  /// the listener socket is shut down. Any pending [accept] call completes
+  /// with an error.
   ///
   /// If [force] is `false` (the default), only the listener socket itself
   /// is closed. Accepted connections remain alive and must be closed
@@ -124,8 +125,7 @@ abstract interface class Listener {
 }
 
 final class _Listener implements Listener, _NativeHandle {
-  _Listener(this.handle, this.service)
-    : connections = LinkedList<_Connection>() {
+  _Listener(this.handle, this.service) : connections = HashSet<_Connection>() {
     service.register(this);
   }
 
@@ -134,7 +134,7 @@ final class _Listener implements Listener, _NativeHandle {
 
   final _IOService service;
 
-  final LinkedList<_Connection> connections;
+  final HashSet<_Connection> connections;
 
   @override
   late final InternetAddress address = _getLocalAddress(handle);
@@ -153,23 +153,22 @@ final class _Listener implements Listener, _NativeHandle {
     });
 
     var connection = _Connection(response.result, service);
+    connection._listener = this;
     connections.add(connection);
     return connection;
   }
 
   @override
   Future<void> close({bool force = false}) async {
-    if (force) {
-      for (var connection in connections.toList()) {
-        await connection.close();
-      }
-    }
-
     await service.request((id) {
       var code = tcp_listener_close(id, handle, force);
       SocketException.checkResult(code);
     });
 
     service.unregister(this);
+
+    if (force) {
+      await Future.wait(connections.map((connection) => connection.close()));
+    }
   }
 }
