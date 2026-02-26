@@ -36,25 +36,31 @@ if (target.result.os.tag == .windows) {
 
 Every connection and listener is backed by a slot in a fixed-size native handle
 table (`MAX_HANDLES = 4096`). Handle IDs are 1-based indices so that 0 is never
-a valid handle. The Dart-side `_Connection` and `_Listener` classes both
-implement a shared `_NativeHandle` interface that exposes the integer handle ID
-to `_IOService` for uniform lifecycle management.
+a valid handle. Each slot carries a generation counter that increments on every
+allocation, used to prevent ABA races with GC finalizers (see below). The
+Dart-side `_Connection` and `_Listener` classes both implement a shared
+`_NativeHandle` interface that exposes the integer handle ID to `_IOService` for
+uniform lifecycle management.
 
 ### Allocation
 
 When a handle-creating operation completes (connect, listen, accept), the native
 completion handler calls `handle_alloc` to claim a table slot, stores the OS
-socket and the originating isolate's `send_port`, and posts the handle ID back
-to Dart. The Dart constructor then calls `_IOService.register(this)`, which adds
-the handle to the isolate's `activeHandles` set and attaches a native GC-release
-callback via `tcp_attach_release`.
+socket and the originating isolate's `send_port`, increments the slot's
+generation counter, and posts the handle ID back to Dart. The Dart constructor
+then calls `_IOService.register(this)`, which adds the handle to the isolate's
+`activeHandles` set and attaches a native GC-release callback via
+`tcp_attach_release`.
 
 ### Explicit close
 
 `Connection.close()` and `Listener.close()` call into the native `tcp_close` or
-`tcp_listener_close` functions, which close the OS socket and free the handle
-table slot (setting `in_use = false`). The Dart side then calls
-`_IOService.unregister(this)` to remove the handle from the active set. When the
+`tcp_listener_close` functions, which atomically retrieve the socket and
+`send_port` from the handle table slot and free it in a single lock acquisition
+via `handle_close`. This prevents TOCTOU races where a GC finalizer could free
+the slot between separate lookup and free calls. On the Dart side, the `closed`
+flag is set before the `await` to prevent concurrent close calls, then
+`_IOService.unregister(this)` removes the handle from the active set. When the
 active set empties, the `_IOService` disposes itself — closing the
 `RawReceivePort` and nulling the singleton so a fresh instance will be created
 on next use.
@@ -72,11 +78,37 @@ The native function creates a `Dart_FinalizableHandle` using
 callback. When the GC collects the object, it invokes the callback which closes
 the socket and frees the handle table slot.
 
-The release callback is idempotent. If `close()` already ran, the slot's
-`in_use` flag is `false` and the callback returns immediately — no double-close,
-no use-after-free. This avoids the need to delete the finalizable handle on the
+#### ABA protection via generation counter
+
+Each handle table slot carries a `generation` counter that increments on every
+`handle_alloc`. When `tcp_attach_release` creates the finalizable handle, it
+packs both the 1-based slot index (lower 32 bits) and the current generation
+(upper 32 bits) into the 64-bit `peer` pointer passed to the VM. When the GC
+release callback fires, it unpacks the peer and compares the stored generation
+against the slot's current generation. If they differ, the slot has been freed
+and reused by a different object — the callback returns immediately without
+touching the new owner's resources.
+
+This prevents a subtle ABA race that manifests under GC pressure (e.g. large
+payload tests). Objects from a previous test may not be collected until a later
+test triggers GC. By that point their old handle slots have been freed and
+reallocated to new objects. Without the generation check, the stale finalizer
+would see `in_use == true` on the recycled slot and close the new owner's
+socket.
+
+The generation counter is preserved across `tcp_init` / `tcp_destroy` cycles so
+that stale finalizers from a previous initialization epoch cannot match slots
+allocated in a new epoch.
+
+#### Idempotency
+
+If `close()` already freed the slot, the callback sees either `in_use == false`
+or a generation mismatch and returns immediately — no double-close, no
+use-after-free. This avoids the need to delete the finalizable handle on the
 explicit close path, which would require threading a `Dart_Handle` parameter
 through `tcp_close`.
+
+#### Backend strategies
 
 The release strategy differs by backend because of constraints on which thread
 can close the socket:
@@ -91,6 +123,12 @@ table slot. POSIX `close` is safe from any thread. The kernel completes any
 in-flight io_uring operations on the closed fd with errors, and the CQ thread
 handles them using cached values in the `IoContext`.
 
+On **libxev**, the callback calls `close(fd)` directly and frees the handle
+table slot, same as io_uring. libxev works with raw file descriptors rather than
+owning opaque handles, so closing the fd from the finalizer thread is safe.
+In-flight xev operations complete with errors and the loop thread handles them
+using cached values in the `OpCtx`.
+
 On **libuv**, the callback CANNOT close the socket directly. libuv owns the
 socket through a `uv_tcp_t` handle, and closing the raw fd behind libuv's back
 would corrupt its internal state. Instead, the callback frees the handle table
@@ -101,6 +139,8 @@ properly tear down the `uv_tcp_t`, and the `on_close` callback frees the
 the loop before the request is processed, `queue_destroy` closes the raw fd
 directly and frees the struct — at that point the loop is already dead so
 there's no libuv state to corrupt.
+
+#### Coverage
 
 This mechanism covers two scenarios. First, an isolate exits without closing its
 handles while other isolates continue running — the GC collects orphaned handles
@@ -161,11 +201,12 @@ pre-created accept socket, whose address family is determined by querying
 `SO_PROTOCOL_INFOW` on the listener. Partial writes are handled transparently by
 reissuing `WSASend` in the completion handler until all bytes are sent.
 
-On close, `CancelIoEx` is called before `closesocket` to cancel any in-flight
-overlapped operations. The cancelled completions arrive on the IOCP thread with
-error status and are posted back to Dart using the cached `send_port` and
-`socket` values in the `IOContext`, which remain valid after the handle table
-slot is freed.
+On close, `handle_close` atomically retrieves the socket and `send_port` and
+frees the slot in a single critical section, then `CancelIoEx` is called before
+`closesocket` to cancel any in-flight overlapped operations. The cancelled
+completions arrive on the IOCP thread with error status and are posted back to
+Dart using the cached `send_port` and `socket` values in the `IOContext`, which
+remain valid after the handle table slot is freed.
 
 ### `tcp_io_uring.c` — Linux
 
@@ -188,10 +229,11 @@ used on all sends, with `SIGPIPE` ignored at init as a safety net. Partial
 writes are resubmitted from the CQ thread. Shutdown is signaled via a
 `IORING_OP_NOP` with a sentinel context.
 
-On close, `close(fd)` is called directly without explicit cancellation of
-in-flight SQEs. The kernel completes pending operations on the closed fd with
-errors (typically `-ECANCELED` or `-EBADF`), and the CQ thread handles these
-using the cached `fd` and `send_port` in the `IoContext`.
+On close, `handle_close` atomically retrieves the fd and `send_port` and frees
+the slot in a single mutex hold, then `close(fd)` is called without explicit
+cancellation of in-flight SQEs. The kernel completes pending operations on the
+closed fd with errors (typically `-ECANCELED` or `-EBADF`), and the CQ thread
+handles these using the cached `fd` and `send_port` in the `IoContext`.
 
 ### `tcp_uv.c` — Fallback (macOS, FreeBSD, Android, others)
 

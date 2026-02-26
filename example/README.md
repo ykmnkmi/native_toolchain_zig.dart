@@ -13,7 +13,7 @@ Dart isolates and native code using `Dart_NewNativePort_DL` and `Dart_PostCObjec
 ## [`zig_tcp`][zig_tcp] — Cross-Platform Async TCP Sockets
 
 A full async TCP socket library with a Dart `Connection`/`Listener` API backed
-by platform-native I/O (IOCP on Windows, `io_uring` on Linux, `libuv` elsewhere),
+by platform-native I/O (IOCP on Windows, `io_uring` on Linux, `libxev` elsewhere),
 multi-isolate support, and GC-safe handle lifecycle management.
 
 [zig_math]: https://github.com/ykmnkmi/native_toolchain_zig.dart/tree/main/example/zig_math
