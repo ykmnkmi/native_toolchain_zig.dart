@@ -88,12 +88,30 @@ const HandleEntry = struct {
     send_port: i64 = 0,
     in_use: bool = false,
     is_listener: bool = false,
+    generation: u32 = 0,
 };
 
 const invalid_fd: posix.socket_t = -1;
 
 var g_handles: [MAX_HANDLES]HandleEntry = [_]HandleEntry{.{}} ** MAX_HANDLES;
 var g_handles_lock: std.Thread.Mutex = .{};
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Peer encoding for GC-release finalizers
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// See tcp_io_uring.c for rationale — prevents ABA races on handle slot reuse.
+
+fn packPeer(id: i64, generation: u32) i64 {
+    return (@as(i64, generation) << 32) | (id & 0xFFFFFFFF);
+}
+
+fn unpackPeer(peer: i64) struct { id: i64, generation: u32 } {
+    return .{
+        .id = peer & 0xFFFFFFFF,
+        .generation = @intCast(@as(u64, @bitCast(peer)) >> 32),
+    };
+}
 
 /// Allocate a handle table slot. Returns 1-based ID, or 0 on failure.
 fn handleAlloc(fd: posix.socket_t, send_port: i64, is_listener: bool) i64 {
@@ -107,6 +125,7 @@ fn handleAlloc(fd: posix.socket_t, send_port: i64, is_listener: bool) i64 {
                 .send_port = send_port,
                 .in_use = true,
                 .is_listener = is_listener,
+                .generation = g_handles[i].generation +% 1,
             };
             return @as(i64, @intCast(i)) + 1;
         }
@@ -126,6 +145,34 @@ fn handleFree(id: i64) void {
         g_handles[idx].in_use = false;
         g_handles[idx].fd = invalid_fd;
     }
+}
+
+const HandleCloseResult = struct {
+    fd: posix.socket_t,
+    send_port: i64,
+};
+
+/// Atomically retrieve the fd and send_port for a handle, then free the slot.
+///
+/// Returns the fd and send_port if the handle was still active, or null if
+/// already freed (e.g. by the GC-release finalizer).
+fn handleClose(id: i64) ?HandleCloseResult {
+    if (id < 1 or id > MAX_HANDLES) return null;
+    const idx: usize = @intCast(id - 1);
+
+    g_handles_lock.lock();
+    defer g_handles_lock.unlock();
+
+    if (!g_handles[idx].in_use) return null;
+
+    const result = HandleCloseResult{
+        .fd = g_handles[idx].fd,
+        .send_port = g_handles[idx].send_port,
+    };
+    g_handles[idx].in_use = false;
+    g_handles[idx].fd = invalid_fd;
+
+    return result;
 }
 
 /// Look up the fd for a handle. Returns invalid_fd on failure.
@@ -426,14 +473,15 @@ var g_stopping: bool = false;
 // and we return immediately.  No double-close.
 
 fn releaseHandleCallback(_: ?*anyopaque, peer: ?*anyopaque) callconv(.C) void {
-    const raw_id = @as(i64, @intCast(@as(isize, @intCast(@intFromPtr(peer orelse return)))));
-    if (raw_id < 1 or raw_id > MAX_HANDLES) return;
-    const idx: usize = @intCast(raw_id - 1);
+    const raw = @as(i64, @intCast(@as(isize, @intCast(@intFromPtr(peer orelse return)))));
+    const unpacked = unpackPeer(raw);
+    if (unpacked.id < 1 or unpacked.id > MAX_HANDLES) return;
+    const idx: usize = @intCast(unpacked.id - 1);
 
     g_handles_lock.lock();
 
-    if (!g_handles[idx].in_use) {
-        // Already closed - normal close() ran before the finalizer.
+    if (!g_handles[idx].in_use or g_handles[idx].generation != unpacked.generation) {
+        // Already closed, or slot was recycled by a new object.
         g_handles_lock.unlock();
         return;
     }
@@ -910,7 +958,13 @@ export fn tcp_destroy() void {
 export fn tcp_attach_release(object: dart.Dart_Handle, handle: i64) void {
     if (handle < 1 or handle > MAX_HANDLES) return;
 
-    const peer: ?*anyopaque = @ptrFromInt(@as(usize, @intCast(handle)));
+    const idx: usize = @intCast(handle - 1);
+
+    g_handles_lock.lock();
+    const gen = g_handles[idx].generation;
+    g_handles_lock.unlock();
+
+    const peer: ?*anyopaque = @ptrFromInt(@as(usize, @intCast(packPeer(handle, gen))));
     _ = dart.Dart_NewFinalizableHandle_DL(object, peer, 0, releaseHandleCallback);
 }
 
@@ -1048,16 +1102,14 @@ export fn tcp_close_write(request_id: i64, handle: i64) i64 {
 export fn tcp_close(request_id: i64, handle: i64) i64 {
     if (!g_initialized) return TCP_ERR_NOT_INITIALIZED;
 
-    const fd = handleGetFd(handle);
-    if (fd == invalid_fd) return TCP_ERR_INVALID_HANDLE;
+    const result = handleClose(handle) orelse
+        return TCP_ERR_INVALID_HANDLE;
 
-    const sp = handleGetSendPort(handle);
-    if (sp == 0) return TCP_ERR_INVALID_HANDLE;
+    if (result.fd != invalid_fd) {
+        posix.close(result.fd);
+    }
 
-    posix.close(fd);
-    handleFree(handle);
-
-    postResult(sp, request_id, 0);
+    postResult(result.send_port, request_id, 0);
     return 0;
 }
 
@@ -1154,20 +1206,18 @@ export fn tcp_listener_close(
     listener_handle: i64,
     force: bool,
 ) i64 {
-    _ = force; // Force-close of child connections is handled on the Dart side.
+    _ = force;
 
     if (!g_initialized) return TCP_ERR_NOT_INITIALIZED;
 
-    const fd = handleGetFd(listener_handle);
-    if (fd == invalid_fd) return TCP_ERR_INVALID_HANDLE;
+    const result = handleClose(listener_handle) orelse
+        return TCP_ERR_INVALID_HANDLE;
 
-    const sp = handleGetSendPort(listener_handle);
-    if (sp == 0) return TCP_ERR_INVALID_HANDLE;
+    if (result.fd != invalid_fd) {
+        posix.close(result.fd);
+    }
 
-    posix.close(fd);
-    handleFree(listener_handle);
-
-    postResult(sp, request_id, 0);
+    postResult(result.send_port, request_id, 0);
     return 0;
 }
 

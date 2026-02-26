@@ -255,12 +255,13 @@ final class _Connection implements Connection, _NativeHandle {
       return;
     }
 
+    closed = true;
+
     await service.request((id) {
       var code = tcp_close(id, handle);
       SocketException.checkResult(code);
     });
 
-    closed = true;
     _listener?.connections.remove(this);
     service.unregister(this);
   }

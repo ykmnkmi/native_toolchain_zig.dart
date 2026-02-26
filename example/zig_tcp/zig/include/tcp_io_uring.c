@@ -404,6 +404,7 @@ typedef struct {
     int64_t     send_port;
     bool        in_use;
     bool        is_listener;
+    uint32_t    generation;
 } HandleEntry;
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -477,6 +478,27 @@ static void post_result_with_data(int64_t send_port, int64_t request_id,
  * Handle table
  * ═══════════════════════════════════════════════════════════════════════════ */
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Peer encoding for GC-release finalizers
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * The 64-bit peer value passed to Dart_NewFinalizableHandle_DL packs both
+ * the 1-based handle ID (lower 32 bits) and the slot's generation counter
+ * (upper 32 bits).  This prevents ABA races where the GC finalizer for an
+ * old Dart object fires after its handle slot has been freed and reused by
+ * a new object — the generation check in release_handle_callback detects
+ * the mismatch and returns without freeing the new owner's resources.
+ */
+
+static int64_t pack_peer(int64_t id, uint32_t generation) {
+    return ((int64_t)generation << 32) | (id & 0xFFFFFFFF);
+}
+
+static void unpack_peer(int64_t peer, int64_t* id, uint32_t* generation) {
+    *id = peer & 0xFFFFFFFF;
+    *generation = (uint32_t)((uint64_t)peer >> 32);
+}
+
 static int64_t handle_alloc(int fd, int64_t send_port, bool is_listener) {
     pthread_mutex_lock(&g_handles_lock);
 
@@ -486,6 +508,7 @@ static int64_t handle_alloc(int fd, int64_t send_port, bool is_listener) {
             g_handles[i].send_port   = send_port;
             g_handles[i].in_use      = true;
             g_handles[i].is_listener = is_listener;
+            g_handles[i].generation++;
             pthread_mutex_unlock(&g_handles_lock);
             return (int64_t)(i + 1);
         }
@@ -505,6 +528,32 @@ static void handle_free(int64_t id) {
         g_handles[idx].fd     = -1;
     }
     pthread_mutex_unlock(&g_handles_lock);
+}
+
+/**
+ * Atomically retrieve the fd and send_port for a handle, then free the slot.
+ *
+ * Returns true if the handle was still active (fd and send_port are written).
+ * Returns false if already freed (e.g. by the GC-release finalizer).
+ */
+static bool handle_close(int64_t id, int* out_fd, int64_t* out_send_port) {
+    if (id < 1 || id > MAX_HANDLES) return false;
+    int idx = (int)(id - 1);
+
+    pthread_mutex_lock(&g_handles_lock);
+
+    if (!g_handles[idx].in_use) {
+        pthread_mutex_unlock(&g_handles_lock);
+        return false;
+    }
+
+    *out_fd        = g_handles[idx].fd;
+    *out_send_port = g_handles[idx].send_port;
+    g_handles[idx].in_use = false;
+    g_handles[idx].fd     = -1;
+
+    pthread_mutex_unlock(&g_handles_lock);
+    return true;
 }
 
 static int handle_get_fd(int64_t id) {
@@ -535,8 +584,10 @@ static int64_t handle_get_send_port(int64_t id) {
  * collected without an explicit close().  Closes the socket and frees the
  * handle table slot.
  *
- * Idempotent: if tcp_close / tcp_listener_close already freed the slot,
- * in_use is false and we return immediately.
+ * The peer value encodes both the handle ID and the generation counter from
+ * when the finalizer was attached.  If the slot's generation has advanced
+ * (i.e. the slot was freed and reused by a different object), the callback
+ * returns without touching the new owner's resources.
  *
  * Thread safety: may be called from any thread the GC runs on.  All
  * handle table access goes through g_handles_lock.
@@ -544,15 +595,19 @@ static int64_t handle_get_send_port(int64_t id) {
 static void release_handle_callback(void* isolate_callback_data, void* peer) {
     (void)isolate_callback_data;
 
-    int64_t id = (int64_t)(intptr_t)peer;
+    int64_t raw = (int64_t)(intptr_t)peer;
+    int64_t id;
+    uint32_t gen;
+    unpack_peer(raw, &id, &gen);
+
     if (id < 1 || id > MAX_HANDLES) return;
 
     int idx = (int)(id - 1);
 
     pthread_mutex_lock(&g_handles_lock);
 
-    if (!g_handles[idx].in_use) {
-        /* Already closed — normal close() ran before the finalizer. */
+    if (!g_handles[idx].in_use || g_handles[idx].generation != gen) {
+        /* Already closed, or slot was recycled by a new object. */
         pthread_mutex_unlock(&g_handles_lock);
         return;
     }
@@ -571,16 +626,19 @@ static void release_handle_callback(void* isolate_callback_data, void* peer) {
 /**
  * Attach a GC-release callback to a Dart object.
  *
- * Creates a Dart_FinalizableHandle that ties the Dart object's lifetime
- * to the native handle table slot.  The VM calls release_handle_callback
- * when the object is collected.
- *
- * Called from the Dart thread in _IOService.register().
+ * The peer value encodes both the handle ID and the current generation,
+ * so the callback can detect slot reuse (ABA) and skip stale releases.
  */
 TCP_EXPORT void tcp_attach_release(Dart_Handle object, int64_t handle) {
     if (handle < 1 || handle > MAX_HANDLES) return;
 
-    void* peer = (void*)(intptr_t)handle;
+    int idx = (int)(handle - 1);
+
+    pthread_mutex_lock(&g_handles_lock);
+    uint32_t gen = g_handles[idx].generation;
+    pthread_mutex_unlock(&g_handles_lock);
+
+    void* peer = (void*)(intptr_t)pack_peer(handle, gen);
 
     Dart_NewFinalizableHandle_DL(object, peer, 0, release_handle_callback);
 }
@@ -811,7 +869,8 @@ TCP_EXPORT void tcp_init(void* dart_api_dl) {
     /* Ignore SIGPIPE — we use MSG_NOSIGNAL on sends, but belt-and-braces. */
     signal(SIGPIPE, SIG_IGN);
 
-    /* Handle table. */
+    /* Handle table — reset fd and in_use but preserve generation counters
+     * so stale GC finalizers from a previous cycle can't ABA-match. */
     for (int i = 0; i < MAX_HANDLES; i++) {
         g_handles[i].fd     = -1;
         g_handles[i].in_use = false;
@@ -1114,14 +1173,14 @@ TCP_EXPORT int64_t tcp_close_write(int64_t request_id, int64_t handle) {
 TCP_EXPORT int64_t tcp_close(int64_t request_id, int64_t handle) {
     if (!g_initialized) return TCP_ERR_NOT_INITIALIZED;
 
-    int fd = handle_get_fd(handle);
-    if (fd < 0) return TCP_ERR_INVALID_HANDLE;
+    int fd;
+    int64_t send_port;
 
-    int64_t send_port = handle_get_send_port(handle);
-    if (send_port == 0) return TCP_ERR_INVALID_HANDLE;
+    if (!handle_close(handle, &fd, &send_port)) {
+        return TCP_ERR_INVALID_HANDLE;
+    }
 
-    close(fd);
-    handle_free(handle);
+    if (fd >= 0) close(fd);
 
     post_result(send_port, request_id, 0);
     return 0;
@@ -1227,14 +1286,14 @@ TCP_EXPORT int64_t tcp_listener_close(
 
     if (!g_initialized) return TCP_ERR_NOT_INITIALIZED;
 
-    int fd = handle_get_fd(listener_handle);
-    if (fd < 0) return TCP_ERR_INVALID_HANDLE;
+    int fd;
+    int64_t send_port;
 
-    int64_t send_port = handle_get_send_port(listener_handle);
-    if (send_port == 0) return TCP_ERR_INVALID_HANDLE;
+    if (!handle_close(listener_handle, &fd, &send_port)) {
+        return TCP_ERR_INVALID_HANDLE;
+    }
 
-    close(fd);
-    handle_free(listener_handle);
+    if (fd >= 0) close(fd);
 
     post_result(send_port, request_id, 0);
     return 0;
