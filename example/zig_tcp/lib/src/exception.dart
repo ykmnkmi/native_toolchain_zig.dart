@@ -6,7 +6,7 @@ part of '/zig_tcp.dart';
 ///
 /// ```dart
 /// try {
-///   await conn.write(data);
+///   await connection.write(data);
 /// } on SocketException catch (error) {
 ///   switch (error) {
 ///     case ConnectionClosed():  print('peer disconnected');

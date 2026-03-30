@@ -3,12 +3,7 @@ part of '/zig_tcp.dart';
 /// Internal interface for objects that own a native handle table slot.
 ///
 /// Both [_Connection] and [_Listener] implement this, allowing [_IOService]
-/// to manage native resource lifecycle uniformly - including the GC-release
-/// callback that frees the handle table slot if the Dart object is collected
-/// without an explicit `close()` call.
-///
-/// On process exit, finalizers are NOT guaranteed to run, but the OS
-/// reclaims all file descriptors, sockets, and memory regardless.
+/// to manage native resource lifecycle uniformly through reference counting.
 abstract interface class _NativeHandle {
   /// The 1-based index into the native handle table.
   int get handle;
@@ -44,8 +39,9 @@ final class _IOService {
       activeHandles = HashSet<_NativeHandle>(),
       next = 0 {
     // Idempotent on the native side - only the first call across all
-    // isolates actually starts the event loop.
-    tcp_init(NativeApi.initializeApiDLData);
+    // isolates actually starts the event loop. Returns negative error
+    // code if initialization failed (e.g. loop/thread creation failure).
+    SocketException.checkResult(tcp_init(NativeApi.initializeApiDLData));
     receivePort.handler = handler;
   }
 
@@ -67,36 +63,13 @@ final class _IOService {
   /// to post results for this isolate.
   int get nativePort => receivePort.sendPort.nativePort;
 
-  /// Register a newly created handle and attach a native GC-release
-  /// callback to [handle].
+  /// Register a newly created handle.
   ///
   /// Called after a handle-creating operation (connect, bind, accept)
-  /// completes successfully. The [tcp_attach_release] call passes the
-  /// Dart object as a `Dart_Handle` to the native side, which creates a
-  /// `Dart_FinalizableHandle` via `Dart_NewFinalizableHandle_DL`. If the
-  /// Dart object is later garbage-collected without an explicit `close()`
-  /// call, the VM invokes the native release callback to close the socket
-  /// and free the handle table slot.
-  ///
-  /// When `close()` IS called, [tcp_close] / [tcp_listener_close] frees
-  /// the slot first (setting `in_use = false`). The finalizer eventually
-  /// fires but sees `in_use == false` and returns immediately - no
-  /// double-free, no use-after-free.
-  ///
-  /// This covers two scenarios:
-  ///
-  ///   1. An isolate exits without closing its handles while other isolates
-  ///      continue running - the GC collects orphaned handles and the
-  ///      finalizer frees the native resources.
-  ///
-  ///   2. A handle becomes unreachable during normal operation (e.g. lost
-  ///      reference without calling close) - the GC eventually collects it.
-  ///
-  /// On process exit, finalizers are NOT guaranteed to run, but the OS
-  /// reclaims all file descriptors, sockets, and memory regardless.
+  /// completes successfully. The handle is added to the active set so
+  /// the service stays alive until all handles are closed.
   void register(_NativeHandle handle) {
     activeHandles.add(handle);
-    tcp_attach_release(handle, handle.handle);
   }
 
   /// Called after a handle-closing operation (close, listener close)

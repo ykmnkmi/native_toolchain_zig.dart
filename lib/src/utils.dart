@@ -47,8 +47,7 @@ Future<void> ensureInstalled({Logger? logger}) async {
 
 /// Checks if a directory contains a Zig project (has `build.zig`).
 bool isZigProject(String directory) {
-  return Directory(directory).existsSync() &&
-      File(path.join(directory, 'build.zig')).existsSync();
+  return Directory(directory).existsSync() && File(path.join(directory, 'build.zig')).existsSync();
 }
 
 /// Lists all `.zig` source files in a directory recursively.

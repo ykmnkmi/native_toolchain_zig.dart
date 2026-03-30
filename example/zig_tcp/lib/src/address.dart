@@ -7,7 +7,7 @@ InternetAddress _getLocalAddress(int handle) {
     var length = tcp_get_local_address(handle, buffer);
     SocketException.checkResult(length);
 
-    var rawAddress = Uint8List.fromList(buffer.asTypedList(length));
+    var rawAddress = buffer.asTypedList(length);
     return InternetAddress.fromRawAddress(rawAddress);
   } finally {
     calloc.free(buffer);
@@ -27,7 +27,7 @@ InternetAddress _getRemoteAddress(int handle) {
     var length = tcp_get_remote_address(handle, buffer);
     SocketException.checkResult(length);
 
-    var rawAddress = Uint8List.fromList(buffer.asTypedList(length));
+    var rawAddress = buffer.asTypedList(length);
     return InternetAddress.fromRawAddress(rawAddress);
   } finally {
     calloc.free(buffer);

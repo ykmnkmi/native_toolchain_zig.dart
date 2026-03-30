@@ -224,9 +224,7 @@ Uri _locateLibrary(Uri outputDir, String libName, Target target) {
     }
   }
 
-  String paths = searchPaths
-      .map<String>((path) => '  - ${path.toFilePath()}')
-      .join('\n');
+  String paths = searchPaths.map<String>((path) => '  - ${path.toFilePath()}').join('\n');
 
   throw BuildError(
     message:

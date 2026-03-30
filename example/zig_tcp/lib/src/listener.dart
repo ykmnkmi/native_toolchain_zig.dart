@@ -18,7 +18,7 @@ part of '/zig_tcp.dart';
 /// For multi-isolate servers, each isolate can bind to the same address
 /// with `shared: true`. The OS distributes incoming connections across
 /// isolates via `SO_REUSEADDR` / `SO_REUSEPORT`.
-abstract interface class Listener {
+abstract interface class Listener implements Stream<Connection> {
   /// The address this listener is bound to.
   InternetAddress get address;
 
@@ -124,8 +124,8 @@ abstract interface class Listener {
   }
 }
 
-final class _Listener implements Listener, _NativeHandle {
-  _Listener(this.handle, this.service) : connections = HashSet<_Connection>() {
+final class _Listener extends Stream<Connection> implements Listener, _NativeHandle {
+  _Listener(this.handle, this.service) : connections = HashSet<_Connection>(), paused = false, closed = false {
     service.register(this);
   }
 
@@ -136,6 +136,16 @@ final class _Listener implements Listener, _NativeHandle {
 
   final HashSet<_Connection> connections;
 
+  List<int>? pendingHandles;
+
+  StreamController<_Connection>? controller;
+
+  RawReceivePort? acceptPort;
+
+  bool paused;
+
+  bool closed;
+
   @override
   late final InternetAddress address = _getLocalAddress(handle);
 
@@ -145,30 +155,158 @@ final class _Listener implements Listener, _NativeHandle {
   @override
   int get acceptedConnections => connections.length;
 
-  @override
-  Future<Connection> accept() async {
-    var response = await service.request((id) {
-      var code = tcp_accept(id, handle);
-      SocketException.checkResult(code);
-    });
+  StreamController<_Connection> getController() {
+    var controller = this.controller ??= StreamController<_Connection>();
+    var pendingHandles = this.pendingHandles ??= <int>[];
 
-    var connection = _Connection(response.result, service);
+    void onListen() {
+      var controller = this.controller!;
+
+      var port = acceptPort = RawReceivePort((int handle) {
+        if (closed) {
+          return;
+        }
+
+        if (handle < 0) {
+          controller.addError(SocketException.fromCode(handle));
+          return;
+        }
+
+        if (paused) {
+          pendingHandles.add(handle);
+        } else {
+          controller.add(wrapHandle(handle));
+        }
+      });
+
+      // Check the return value — if the native side rejects the request
+      // (e.g. invalid handle, already closed), the stream would silently
+      // produce nothing. Surface the error to subscribers instead.
+      var code = tcp_accept_loop(port.sendPort.nativePort, handle);
+
+      if (code < 0) {
+        controller.addError(SocketException.fromCode(code));
+      }
+    }
+
+    void onPause() {
+      paused = true;
+    }
+
+    void onResume() {
+      paused = false;
+
+      for (var handle in pendingHandles) {
+        if (closed) {
+          break;
+        }
+
+        controller.add(wrapHandle(handle));
+      }
+
+      pendingHandles.clear();
+    }
+
+    Future<void> onCancel() {
+      return close();
+    }
+
+    return controller
+      ..onListen = onListen
+      ..onPause = onPause
+      ..onResume = onResume
+      ..onCancel = onCancel;
+  }
+
+  _Connection wrapHandle(int connectionHandle) {
+    var connection = _Connection(connectionHandle, service);
     connection._listener = this;
     connections.add(connection);
     return connection;
   }
 
+  Future<void> closePendingHandles() async {
+    var pendingHandles = this.pendingHandles;
+
+    if (pendingHandles == null || pendingHandles.isEmpty) {
+      return;
+    }
+
+    await Future.wait<void>(
+      pendingHandles.map<Future<void>>((handle) {
+        return service.request((id) {
+          tcp_close(id, handle);
+        });
+      }),
+    );
+
+    pendingHandles.clear();
+  }
+
+  @override
+  Future<Connection> accept() async {
+    // Prevent using one-shot accept() while the stream-based accept loop
+    // is active — both paths accept from the same native listener, which
+    // would race and produce unpredictable results. acceptPort is non-null
+    // exactly when tcp_accept_loop is running.
+    if (acceptPort != null) {
+      throw StateError(
+        'Cannot use accept() while the stream accept loop is active.',
+      );
+    }
+
+    var response = await service.request((id) {
+      var code = tcp_accept(id, handle);
+      SocketException.checkResult(code);
+    });
+
+    return wrapHandle(response.result);
+  }
+
+  @override
+  StreamSubscription<Connection> listen(
+    void Function(Connection event)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) {
+    var controller = getController();
+
+    return controller.stream.listen(
+      onData,
+      onError: onError,
+      onDone: onDone,
+      cancelOnError: cancelOnError,
+    );
+  }
+
   @override
   Future<void> close({bool force = false}) async {
+    if (closed) {
+      return;
+    }
+
+    closed = true;
+
+    if (acceptPort case var port?) {
+      port.close();
+      acceptPort = null;
+    }
+
+    await closePendingHandles();
+
     await service.request((id) {
       var code = tcp_listener_close(id, handle, force);
       SocketException.checkResult(code);
     });
 
-    service.unregister(this);
-
     if (force) {
-      await Future.wait(connections.map((connection) => connection.close()));
+      await Future.wait<void>(
+        connections.map<Future<void>>((connection) => connection.close()),
+      );
     }
+
+    service.unregister(this);
+    controller?.close();
   }
 }

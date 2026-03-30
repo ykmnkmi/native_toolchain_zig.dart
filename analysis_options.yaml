@@ -8,6 +8,10 @@ analyzer:
   errors:
     todo: ignore
 
+formatter:
+  page_width: 120
+  trailing_commas: preserve
+
 linter:
   rules:
     - always_declare_return_types

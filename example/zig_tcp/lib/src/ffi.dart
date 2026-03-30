@@ -2,6 +2,7 @@
 library;
 
 import 'dart:ffi';
+import 'dart:isolate';
 
 /// Invalid or closed handle
 const TCP_ERR_INVALID_HANDLE = -1;
@@ -44,37 +45,20 @@ const TCP_ERR_INVALID_ARGUMENT = -13;
 
 /// Initialize the TCP socket library with Dart API.
 ///
-/// Idempotent — safe to call from multiple isolates; only the first call
-/// starts the event loop. Must be called before any other functions.
+/// Idempotent — safe to call from multiple isolates; only the first call starts
+/// the event loop. Must be called before any other functions.
+///
+/// Returns 0 on success, or a negative error code if initialization failed
+/// (e.g. could not create the event loop or spawn the background thread).
 ///
 /// * [dart_api_dl]\: pointer to Dart API DL structure.
-@Native<Void Function(Pointer<Void>)>()
-external void tcp_init(Pointer<Void> dart_api_dl);
+@Native<Int64 Function(Pointer<Void>)>()
+external int tcp_init(Pointer<Void> dart_api_dl);
 
-/// Shut down the library: stops the event loop thread, closes all sockets,
-/// and frees all resources. Must be called before process exit.
+/// Shut down the library: stops the event loop thread, closes all sockets, and
+/// frees all resources. Must be called before process exit.
 @Native<Void Function()>()
 external void tcp_destroy();
-
-/// Attach a native GC-release callback to a Dart [object].
-///
-/// Creates a `Dart_FinalizableHandle` on the native side via
-/// `Dart_NewFinalizableHandle_DL`. When the Dart object is garbage-collected,
-/// the VM invokes the native release callback which closes the socket and
-/// frees the handle table slot for [handle].
-///
-/// This is safe to call even if `close()` is later called explicitly —
-/// `close()` frees the handle table slot first (setting `in_use = false`),
-/// and the finalizer checks `in_use` before doing anything.
-///
-/// The [Handle] FFI type passes a `Dart_Handle` to the native function,
-/// giving it a local reference to the Dart object that the VM can track
-/// for GC purposes.
-///
-/// * [object]\: the Dart `_Connection` or `_Listener` that owns this handle.
-/// * [handle]\: 1-based index into the native handle table.
-@Native<Void Function(Handle, Int64)>()
-external void tcp_attach_release(Object object, int handle);
 
 /// Asynchronously connect to a remote address.
 ///
@@ -174,9 +158,7 @@ external int tcp_close(int request_id, int handle);
 /// * [backlog]\: listen backlog (0 for system default).
 /// * [shared]\: allow address reuse (SO_REUSEADDR + SO_REUSEPORT).
 /// * Returns 0 on successful queue, negative error code on immediate failure.
-@Native<
-  Int64 Function(Int64, Int64, Pointer<Uint8>, Int64, Int64, Bool, Int64, Bool)
->()
+@Native<Int64 Function(Int64, Int64, Pointer<Uint8>, Int64, Int64, Bool, Int64, Bool)>()
 external int tcp_listen(
   int send_port,
   int request_id,
@@ -190,14 +172,36 @@ external int tcp_listen(
 
 /// Asynchronously accept a connection from a listener.
 ///
-/// The accepted connection inherits the listener's send_port, so results
-/// are posted to the isolate that owns the listener.
+/// The accepted connection inherits the listener's send_port, so results are
+/// posted to the isolate that owns the listener.
 ///
 /// * [request_id]\: unique ID for this request.
 /// * [listener_handle]\: listener handle.
 /// * Returns 0 on successful queue, negative error code on immediate failure.
 @Native<Int64 Function(Int64, Int64)>()
 external int tcp_accept(int request_id, int listener_handle);
+
+/// Start a continuous accept loop on a listener.
+///
+/// Unlike [tcp_accept] which accepts ONE connection and posts a
+/// `[request_id, handle, null]` triple, this function continuously accepts
+/// connections and posts each one as a **single int64** to a dedicated Dart
+/// [RawReceivePort]. This enables a push-based `Stream<Connection>` without
+/// polling from Dart.
+///
+/// Message protocol (bare int64, not the `[id, result, data]` triple):
+///   * Positive int64 → connection handle (1-based)
+///   * Negative int64 → error code (from `TCP_ERR_*` constants)
+///
+/// The loop stops automatically when the listener socket is closed (accept
+/// returns error) or the Dart [RawReceivePort] is closed (`Dart_PostCObject_DL`
+/// returns false).
+///
+/// * [send_port]\: Dart native port of the dedicated [RawReceivePort].
+/// * [listener_handle]\: listener handle from [tcp_listen].
+/// * Returns 0 on successful start, negative error code on immediate failure.
+@Native<Int64 Function(Int64, Int64)>()
+external int tcp_accept_loop(int send_port, int listener_handle);
 
 /// Asynchronously close a listener.
 ///

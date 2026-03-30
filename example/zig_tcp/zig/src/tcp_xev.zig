@@ -1,35 +1,26 @@
 /// Cross-platform libxev backend for the Dart TCP socket library.
 ///
 /// Replaces the libuv backend for macOS, FreeBSD, and other non-Linux,
-/// non-Windows platforms.  Uses libxev (https://github.com/mitchellh/libxev)
+/// non-Windows platforms. Uses libxev (https://github.com/mitchellh/libxev)
 /// for async I/O - statically linked, no external system library required.
 ///
 /// Threading model
 /// ───────────────
-///   • Dart thread  -  calls the exported tcp_* functions.  Truly async
-///                     operations (connect, read, write, accept) push
-///                     requests onto a thread-safe queue and wake the
-///                     event loop via xev AsyncNotification.
+///   • Dart thread  -  calls the exported tcp_* functions. Truly async
+///                     operations (connect, read, write, accept) push requests
+///                     onto a thread-safe queue and wake the event loop via xev
+///                     AsyncNotification.
 ///                     Sync-safe operations (listen, close, close_write,
-///                     listener_close, property access) execute inline
-///                     using raw POSIX calls.
-///   • Loop thread  -  runs xev.Loop.run().  Drains the request queue on
-///                     async notification, starts xev operations, and
-///                     posts results back to Dart via Dart_PostCObject_DL.
-///
-/// GC-release
-/// ──────────
-/// Uses the direct close(fd) strategy (same as IOCP and io_uring backends).
-/// Since libxev works with raw file descriptors rather than owning opaque
-/// handles (like libuv's uv_tcp_t), we can safely call close(fd) from the
-/// GC finalizer thread.  In-flight xev operations on that fd will complete
-/// with errors, which the loop thread handles gracefully via cached
-/// send_port/fd in the operation context.
+///                     listener_close, property access) execute inline using
+///                     raw POSIX calls.
+///   • Loop thread  -  runs xev.Loop.run(). Drains the request queue on async
+///                     notification, starts xev operations, and posts results
+///                     back to Dart via Dart_PostCObject_DL.
 ///
 /// Difference from libuv backend
 /// ─────────────────────────────
 /// The libuv backend must route ALL operations through the queue because
-/// libuv's API is single-threaded.  This backend only routes truly async
+/// libuv's API is single-threaded. This backend only routes truly async
 /// operations through the queue - listen, close, close_write, and
 /// listener_close execute directly on the Dart thread via POSIX syscalls,
 /// eliminating unnecessary thread round-trips.
@@ -78,8 +69,8 @@ const TCP_ERR_INVALID_ARGUMENT: i64 = -13;
 // Handle table
 // ═════════════════════════════════════════════════════════════════════════════
 //
-// Maps 1-based handle IDs to raw file descriptors.  Protected by a mutex
-// for thread-safe access from the Dart thread, loop thread, and GC thread.
+// Maps 1-based handle IDs to raw file descriptors. Protected by a mutex for
+// thread-safe access from the Dart thread, loop thread, and GC thread.
 // Unlike the libuv backend, we store raw fds rather than opaque handle
 // pointers - libxev doesn't own the socket.
 
@@ -88,30 +79,12 @@ const HandleEntry = struct {
     send_port: i64 = 0,
     in_use: bool = false,
     is_listener: bool = false,
-    generation: u32 = 0,
 };
 
 const invalid_fd: posix.socket_t = -1;
 
 var g_handles: [MAX_HANDLES]HandleEntry = [_]HandleEntry{.{}} ** MAX_HANDLES;
 var g_handles_lock: std.Thread.Mutex = .{};
-
-// ═════════════════════════════════════════════════════════════════════════════
-// Peer encoding for GC-release finalizers
-// ═════════════════════════════════════════════════════════════════════════════
-//
-// See tcp_io_uring.c for rationale — prevents ABA races on handle slot reuse.
-
-fn packPeer(id: i64, generation: u32) i64 {
-    return (@as(i64, generation) << 32) | (id & 0xFFFFFFFF);
-}
-
-fn unpackPeer(peer: i64) struct { id: i64, generation: u32 } {
-    return .{
-        .id = peer & 0xFFFFFFFF,
-        .generation = @intCast(@as(u64, @bitCast(peer)) >> 32),
-    };
-}
 
 /// Allocate a handle table slot. Returns 1-based ID, or 0 on failure.
 fn handleAlloc(fd: posix.socket_t, send_port: i64, is_listener: bool) i64 {
@@ -125,26 +98,11 @@ fn handleAlloc(fd: posix.socket_t, send_port: i64, is_listener: bool) i64 {
                 .send_port = send_port,
                 .in_use = true,
                 .is_listener = is_listener,
-                .generation = g_handles[i].generation +% 1,
             };
             return @as(i64, @intCast(i)) + 1;
         }
     }
     return 0; // No free slots.
-}
-
-/// Free a handle table slot.
-fn handleFree(id: i64) void {
-    if (id < 1 or id > MAX_HANDLES) return;
-    const idx: usize = @intCast(id - 1);
-
-    g_handles_lock.lock();
-    defer g_handles_lock.unlock();
-
-    if (g_handles[idx].in_use) {
-        g_handles[idx].in_use = false;
-        g_handles[idx].fd = invalid_fd;
-    }
 }
 
 const HandleCloseResult = struct {
@@ -155,7 +113,7 @@ const HandleCloseResult = struct {
 /// Atomically retrieve the fd and send_port for a handle, then free the slot.
 ///
 /// Returns the fd and send_port if the handle was still active, or null if
-/// already freed (e.g. by the GC-release finalizer).
+/// already freed.
 fn handleClose(id: i64) ?HandleCloseResult {
     if (id < 1 or id > MAX_HANDLES) return null;
     const idx: usize = @intCast(id - 1);
@@ -197,11 +155,27 @@ fn handleGetSendPort(id: i64) i64 {
     return if (g_handles[idx].in_use) g_handles[idx].send_port else 0;
 }
 
+const HandleLookup = struct { fd: posix.socket_t, send_port: i64 };
+
+/// Look up both fd and send_port in a single lock acquisition.
+/// Eliminates TOCTOU races between separate handleGetFd/handleGetSendPort
+/// calls where the GC finalizer could close the handle in between.
+fn handleLookup(id: i64) ?HandleLookup {
+    if (id < 1 or id > MAX_HANDLES) return null;
+    const idx: usize = @intCast(id - 1);
+
+    g_handles_lock.lock();
+    defer g_handles_lock.unlock();
+
+    if (!g_handles[idx].in_use) return null;
+    return .{ .fd = g_handles[idx].fd, .send_port = g_handles[idx].send_port };
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Dart message helpers
 // ═════════════════════════════════════════════════════════════════════════════
 //
-// Posts [requestId, result, data?] triples to a Dart ReceivePort.
+// Posts [requestId, result, data?] triples to a Dart RawReceivePort.
 // Dart_PostCObject_DL is thread-safe (documented by the Dart VM).
 
 /// Free callback for external typed data handed to Dart.
@@ -241,8 +215,8 @@ fn postResult(send_port: i64, request_id: i64, result: i64) void {
 
 /// Post [request_id, result, Uint8List] to send_port.
 ///
-/// Ownership of `data` transfers to Dart - the GC will call free() via
-/// the external-typed-data finalizer.
+/// Ownership of `data` transfers to Dart - the GC will call free() via the
+/// external-typed-data finalizer.
 fn postResultWithData(send_port: i64, request_id: i64, result: i64, data: [*]u8, length: usize) void {
     var c_id: dart.Dart_CObject = undefined;
     c_id.type = dart.Dart_CObject_kInt64;
@@ -267,7 +241,12 @@ fn postResultWithData(send_port: i64, request_id: i64, result: i64, data: [*]u8,
     message.value.as_array.length = 3;
     message.value.as_array.values = @ptrCast(&elements);
 
-    _ = dart.Dart_PostCObject_DL(send_port, &message);
+    // If the port is closed (isolate dead), Dart never takes ownership
+    // of the buffer and the external-typed-data finalizer never runs.
+    // Free it ourselves to prevent a leak.
+    if (!dart.Dart_PostCObject_DL(send_port, &message)) {
+        std.heap.c_allocator.free(data[0..length]);
+    }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -296,14 +275,15 @@ fn buildSockaddr(addr: [*]const u8, addr_len: i64, port: i64) ?std.net.Address {
 // ═════════════════════════════════════════════════════════════════════════════
 //
 // Dart thread pushes requests; loop thread drains them in batch.
-// Same pattern as the libuv backend, but only async operations go
-// through the queue - sync operations execute directly on the Dart thread.
+// Same pattern as the libuv backend, but only async operations go through the
+// queue - sync operations execute directly on the Dart thread.
 
 const ReqType = enum {
     connect,
     read,
     write,
     accept,
+    accept_loop,
     stop,
 };
 
@@ -317,6 +297,7 @@ const Request = struct {
     payload: union {
         connect: ConnectPayload,
         write: WritePayload,
+        accept_loop: AcceptLoopPayload,
         none: void,
     } = .{ .none = {} },
 
@@ -328,6 +309,10 @@ const Request = struct {
     const WritePayload = struct {
         data: [*]u8,
         length: usize,
+    };
+
+    const AcceptLoopPayload = struct {
+        stream_port: i64,
     };
 };
 
@@ -381,15 +366,15 @@ const RequestQueue = struct {
 // Operation context - heap-allocated, lives until xev callback fires
 // ═════════════════════════════════════════════════════════════════════════════
 //
-// Every async operation (connect, read, write, accept) allocates an OpCtx
-// on the heap.  The xev Completion is embedded in the struct.  When we
-// start an operation we pass `OpCtx` as the userdata type parameter;
-// libxev internally uses @fieldParentPtr on the Completion to recover
-// the enclosing OpCtx* and passes it as the first callback argument.
+// Every async operation (connect, read, write, accept) allocates an OpCtx on
+// the heap. The xev Completion is embedded in the struct. When we start an
+// operation we pass `OpCtx` as the userdata type parameter; libxev internally
+// uses @fieldParentPtr on the Completion to recover the enclosing OpCtx* and
+// passes it as the first callback argument.
 //
-// Critical: fd and send_port are cached at submission time.  Even if the
-// handle table slot is freed (by close or GC-release) before the callback
-// fires, we still have valid values to post error results.
+// Critical: fd and send_port are cached at submission time. Even if the handle
+// table slot is freed (by close) before the callback fires, we still have
+// valid values to post error results.
 
 const OpCtx = struct {
     completion: xev.Completion = .{},
@@ -402,6 +387,7 @@ const OpCtx = struct {
         read: ReadPayload,
         write: WritePayload,
         accept: AcceptPayload,
+        accept_loop: AcceptLoopPayload,
         none: void,
     } = .{ .none = {} },
 
@@ -418,6 +404,12 @@ const OpCtx = struct {
 
     const AcceptPayload = struct {
         listener_fd: posix.socket_t,
+    };
+
+    const AcceptLoopPayload = struct {
+        listener_fd: posix.socket_t,
+        listener_handle: i64,
+        stream_port: i64,
     };
 
     fn create(
@@ -452,52 +444,6 @@ var g_queue: RequestQueue = .{};
 var g_stopping: bool = false;
 
 // ═════════════════════════════════════════════════════════════════════════════
-// GC-release callback
-// ═════════════════════════════════════════════════════════════════════════════
-//
-// Called by the Dart VM when a _Connection or _Listener object is garbage-
-// collected without an explicit close().
-//
-// Unlike the libuv backend, we CAN close the socket directly from the
-// finalizer thread.  libxev works with raw fds - it doesn't own hidden
-// internal state that would be corrupted by closing the fd behind its
-// back.  On all platforms:
-//   • close(fd) is thread-safe (POSIX guarantee).
-//   • In-flight xev operations on that fd will complete with errors
-//     (EBADF, ECANCELED, etc.) - the loop thread handles these
-//     gracefully using the cached send_port/fd in OpCtx.
-//
-// This is the same strategy as the IOCP and io_uring backends.
-//
-// Idempotent: if close() already freed the slot, in_use is false
-// and we return immediately.  No double-close.
-
-fn releaseHandleCallback(_: ?*anyopaque, peer: ?*anyopaque) callconv(.C) void {
-    const raw = @as(i64, @intCast(@as(isize, @intCast(@intFromPtr(peer orelse return)))));
-    const unpacked = unpackPeer(raw);
-    if (unpacked.id < 1 or unpacked.id > MAX_HANDLES) return;
-    const idx: usize = @intCast(unpacked.id - 1);
-
-    g_handles_lock.lock();
-
-    if (!g_handles[idx].in_use or g_handles[idx].generation != unpacked.generation) {
-        // Already closed, or slot was recycled by a new object.
-        g_handles_lock.unlock();
-        return;
-    }
-
-    const fd = g_handles[idx].fd;
-    g_handles[idx].in_use = false;
-    g_handles[idx].fd = invalid_fd;
-
-    g_handles_lock.unlock();
-
-    if (fd != invalid_fd) {
-        posix.close(fd);
-    }
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
 // xev callbacks - all run on the loop thread
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -517,7 +463,7 @@ fn onConnect(
         return .disarm;
     };
 
-    // Socket is now connected.  Allocate a handle table slot.
+    // Socket is now connected. Allocate a handle table slot.
     const id = handleAlloc(ctx.fd, ctx.send_port, false);
     if (id == 0) {
         posix.close(ctx.fd);
@@ -552,7 +498,7 @@ fn onRead(
         return .disarm;
     }
 
-    // Transfer buffer ownership to Dart.  Do NOT free here.
+    // Transfer buffer ownership to Dart. Do NOT free here.
     postResultWithData(
         ctx.send_port,
         ctx.request_id,
@@ -638,12 +584,77 @@ fn onAccept(
     return .disarm;
 }
 
+/// Post a single int64 to a Dart RawReceivePort.
+///
+/// Returns true if delivered, false if the port is closed. Used by the
+/// accept-loop to detect when the Dart RawReceivePort is gone.
+fn postHandle(send_port: i64, handle: i64) bool {
+    var message: dart.Dart_CObject = undefined;
+    message.type = dart.Dart_CObject_kInt64;
+    message.value.as_int64 = handle;
+    return dart.Dart_PostCObject_DL(send_port, &message);
+}
+
+/// Accept-loop completion callback.
+///
+/// Unlike onAccept which returns .disarm (one-shot), this callback returns
+/// .rearm on success, telling libxev to automatically re-submit the accept
+/// operation. The loop stops on error or when the Dart RawReceivePort is
+/// closed.
+fn onAcceptLoop(
+    ctx_opt: ?*OpCtx,
+    _: *xev.Loop,
+    _: *xev.Completion,
+    r: xev.TCP.AcceptError!xev.TCP,
+) xev.CallbackAction {
+    const ctx = ctx_opt orelse return .disarm;
+
+    const accepted_tcp = r catch {
+        // Accept failed — the listener was probably closed.
+        _ = postHandle(ctx.payload.accept_loop.stream_port, TCP_ERR_ACCEPT_FAILED);
+        std.heap.c_allocator.destroy(ctx);
+        return .disarm;
+    };
+
+    const accepted_fd = accepted_tcp.fd;
+    const stream_port = ctx.payload.accept_loop.stream_port;
+    const listener_handle = ctx.payload.accept_loop.listener_handle;
+
+    // Use the listener's stored send_port for the connection so that
+    // reads/writes route to the correct isolate's _IOService.
+    var conn_port = handleGetSendPort(listener_handle);
+    if (conn_port == 0) conn_port = stream_port;
+
+    const id = handleAlloc(accepted_fd, conn_port, false);
+    if (id == 0) {
+        posix.close(accepted_fd);
+        _ = postHandle(stream_port, TCP_ERR_OUT_OF_MEMORY);
+        std.heap.c_allocator.destroy(ctx);
+        return .disarm;
+    }
+
+    // Post the connection handle to the dedicated Dart port.
+    // If this returns false, the RawReceivePort has been closed —
+    // nobody on the Dart side will ever close this connection.
+    // Free the handle slot and close the fd to avoid leaking.
+    if (!postHandle(stream_port, id)) {
+        if (handleClose(id)) |res| {
+            if (res.fd != invalid_fd) posix.close(res.fd);
+        }
+        std.heap.c_allocator.destroy(ctx);
+        return .disarm;
+    }
+
+    // Re-arm: libxev automatically resubmits the accept.
+    return .rearm;
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Async notification callback - drains the request queue on the loop thread
 // ═════════════════════════════════════════════════════════════════════════════
 //
-// xev.Async.notify() may coalesce multiple signals, so we always drain
-// the entire queue, exactly like the libuv backend's on_async.
+// xev.Async.notify() may coalesce multiple signals, so we always drain the
+// entire queue, exactly like the libuv backend's on_async.
 
 fn onAsync(
     _: ?*anyopaque,
@@ -715,17 +726,15 @@ fn onAsync(
 
             // ─── READ ───────────────────────────────────────────────────
             .read => {
-                const fd = handleGetFd(req.handle_id);
-                const sp = handleGetSendPort(req.handle_id);
-                if (fd == invalid_fd or sp == 0) {
+                const lookup = handleLookup(req.handle_id) orelse {
                     postResult(req.send_port, req.request_id, TCP_ERR_INVALID_HANDLE);
                     std.heap.c_allocator.destroy(req);
                     continue;
-                }
+                };
 
                 // Allocate read buffer.
                 const buffer = std.heap.c_allocator.alloc(u8, READ_BUFFER_SIZE) catch {
-                    postResult(sp, req.request_id, TCP_ERR_OUT_OF_MEMORY);
+                    postResult(lookup.send_port, req.request_id, TCP_ERR_OUT_OF_MEMORY);
                     std.heap.c_allocator.destroy(req);
                     continue;
                 };
@@ -733,12 +742,12 @@ fn onAsync(
                 // Allocate operation context.
                 const ctx = OpCtx.create(
                     req.request_id,
-                    sp,
+                    lookup.send_port,
                     req.handle_id,
-                    fd,
+                    lookup.fd,
                 ) orelse {
                     std.heap.c_allocator.free(buffer);
-                    postResult(sp, req.request_id, TCP_ERR_OUT_OF_MEMORY);
+                    postResult(lookup.send_port, req.request_id, TCP_ERR_OUT_OF_MEMORY);
                     std.heap.c_allocator.destroy(req);
                     continue;
                 };
@@ -748,7 +757,7 @@ fn onAsync(
                 } };
 
                 // Start async read.
-                var tcp = xev.TCP{ .fd = fd };
+                var tcp = xev.TCP{ .fd = lookup.fd };
                 tcp.read(loop, &ctx.completion, .{ .slice = buffer }, OpCtx, onRead);
 
                 std.heap.c_allocator.destroy(req);
@@ -756,14 +765,12 @@ fn onAsync(
 
             // ─── WRITE ──────────────────────────────────────────────────
             .write => {
-                const fd = handleGetFd(req.handle_id);
-                const sp = handleGetSendPort(req.handle_id);
-                if (fd == invalid_fd or sp == 0) {
+                const lookup = handleLookup(req.handle_id) orelse {
                     std.heap.c_allocator.free(req.payload.write.data[0..req.payload.write.length]);
                     postResult(req.send_port, req.request_id, TCP_ERR_INVALID_HANDLE);
                     std.heap.c_allocator.destroy(req);
                     continue;
-                }
+                };
 
                 const data = req.payload.write.data;
                 const length = req.payload.write.length;
@@ -771,12 +778,12 @@ fn onAsync(
                 // Allocate operation context.
                 const ctx = OpCtx.create(
                     req.request_id,
-                    sp,
+                    lookup.send_port,
                     req.handle_id,
-                    fd,
+                    lookup.fd,
                 ) orelse {
                     std.heap.c_allocator.free(data[0..length]);
-                    postResult(sp, req.request_id, TCP_ERR_OUT_OF_MEMORY);
+                    postResult(lookup.send_port, req.request_id, TCP_ERR_OUT_OF_MEMORY);
                     std.heap.c_allocator.destroy(req);
                     continue;
                 };
@@ -787,7 +794,7 @@ fn onAsync(
                 } };
 
                 // Start async write.
-                var tcp = xev.TCP{ .fd = fd };
+                var tcp = xev.TCP{ .fd = lookup.fd };
                 tcp.write(loop, &ctx.completion, .{ .slice = data[0..length] }, OpCtx, onWrite);
 
                 // Transfer buffer ownership to OpCtx - don't free in request.
@@ -797,29 +804,58 @@ fn onAsync(
 
             // ─── ACCEPT ─────────────────────────────────────────────────
             .accept => {
-                const fd = handleGetFd(req.handle_id);
-                const sp = handleGetSendPort(req.handle_id);
-                if (fd == invalid_fd or sp == 0) {
+                const lookup = handleLookup(req.handle_id) orelse {
                     postResult(req.send_port, req.request_id, TCP_ERR_INVALID_HANDLE);
                     std.heap.c_allocator.destroy(req);
                     continue;
-                }
+                };
 
                 const ctx = OpCtx.create(
                     req.request_id,
-                    sp,
+                    lookup.send_port,
                     req.handle_id,
-                    fd,
+                    lookup.fd,
                 ) orelse {
-                    postResult(sp, req.request_id, TCP_ERR_OUT_OF_MEMORY);
+                    postResult(lookup.send_port, req.request_id, TCP_ERR_OUT_OF_MEMORY);
                     std.heap.c_allocator.destroy(req);
                     continue;
                 };
-                ctx.payload = .{ .accept = .{ .listener_fd = fd } };
+                ctx.payload = .{ .accept = .{ .listener_fd = lookup.fd } };
 
                 // Start async accept.
-                var tcp = xev.TCP{ .fd = fd };
+                var tcp = xev.TCP{ .fd = lookup.fd };
                 tcp.accept(loop, &ctx.completion, OpCtx, onAccept);
+
+                std.heap.c_allocator.destroy(req);
+            },
+
+            // ─── ACCEPT LOOP ───────────────────────────────────────────
+            .accept_loop => {
+                const lookup = handleLookup(req.handle_id) orelse {
+                    _ = postHandle(req.payload.accept_loop.stream_port, TCP_ERR_INVALID_HANDLE);
+                    std.heap.c_allocator.destroy(req);
+                    continue;
+                };
+
+                const ctx = OpCtx.create(
+                    0, // no request_id for continuous loop
+                    lookup.send_port,
+                    req.handle_id,
+                    lookup.fd,
+                ) orelse {
+                    _ = postHandle(req.payload.accept_loop.stream_port, TCP_ERR_OUT_OF_MEMORY);
+                    std.heap.c_allocator.destroy(req);
+                    continue;
+                };
+                ctx.payload = .{ .accept_loop = .{
+                    .listener_fd = lookup.fd,
+                    .listener_handle = req.handle_id,
+                    .stream_port = req.payload.accept_loop.stream_port,
+                } };
+
+                // Start async accept with the loop callback.
+                var tcp = xev.TCP{ .fd = lookup.fd };
+                tcp.accept(loop, &ctx.completion, OpCtx, onAcceptLoop);
 
                 std.heap.c_allocator.destroy(req);
             },
@@ -888,14 +924,14 @@ fn reqSubmit(r: *Request) i64 {
 // Exported C API - Initialization / Destruction
 // ═════════════════════════════════════════════════════════════════════════════
 
-export fn tcp_init(dart_api_dl: ?*anyopaque) void {
+export fn tcp_init(dart_api_dl: ?*anyopaque) i64 {
     g_init_lock.lock();
     defer g_init_lock.unlock();
 
     if (g_initialized) {
         // Re-init the Dart DL API for this isolate (safe & required).
         _ = dart.Dart_InitializeApiDL(dart_api_dl);
-        return;
+        return 0;
     }
 
     _ = dart.Dart_InitializeApiDL(dart_api_dl);
@@ -903,12 +939,12 @@ export fn tcp_init(dart_api_dl: ?*anyopaque) void {
     // Handle table is zero-initialized at comptime - nothing to do.
 
     // Event loop.
-    g_loop = xev.Loop.init(.{}) catch return;
+    g_loop = xev.Loop.init(.{}) catch return TCP_ERR_NOT_INITIALIZED;
 
     // Async notification for cross-thread wakeup.
     g_async = xev.Async.init() catch {
         g_loop.deinit();
-        return;
+        return TCP_ERR_NOT_INITIALIZED;
     };
 
     g_stopping = false;
@@ -918,10 +954,11 @@ export fn tcp_init(dart_api_dl: ?*anyopaque) void {
     g_thread = std.Thread.spawn(.{}, loopThreadProc, .{}) catch {
         g_async.deinit();
         g_loop.deinit();
-        return;
+        return TCP_ERR_NOT_INITIALIZED;
     };
 
     g_initialized = true;
+    return 0;
 }
 
 export fn tcp_destroy() void {
@@ -949,23 +986,6 @@ export fn tcp_destroy() void {
     g_loop.deinit();
 
     g_initialized = false;
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// Exported C API - GC-release
-// ═════════════════════════════════════════════════════════════════════════════
-
-export fn tcp_attach_release(object: dart.Dart_Handle, handle: i64) void {
-    if (handle < 1 or handle > MAX_HANDLES) return;
-
-    const idx: usize = @intCast(handle - 1);
-
-    g_handles_lock.lock();
-    const gen = g_handles[idx].generation;
-    g_handles_lock.unlock();
-
-    const peer: ?*anyopaque = @ptrFromInt(@as(usize, @intCast(packPeer(handle, gen))));
-    _ = dart.Dart_NewFinalizableHandle_DL(object, peer, 0, releaseHandleCallback);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1030,9 +1050,11 @@ export fn tcp_connect(
 /// uv_read_start/uv_read_stop), so this maps cleanly.
 export fn tcp_read(request_id: i64, handle: i64) i64 {
     if (!g_initialized) return TCP_ERR_NOT_INITIALIZED;
-    if (handleGetSendPort(handle) == 0) return TCP_ERR_INVALID_HANDLE;
 
-    const r = reqNew(.read, request_id, handleGetSendPort(handle), handle) orelse
+    const sp = handleGetSendPort(handle);
+    if (sp == 0) return TCP_ERR_INVALID_HANDLE;
+
+    const r = reqNew(.read, request_id, sp, handle) orelse
         return TCP_ERR_OUT_OF_MEMORY;
 
     return reqSubmit(r);
@@ -1074,31 +1096,29 @@ export fn tcp_write(
 /// Shutdown the write side of a connection.
 ///
 /// Unlike the libuv backend which must route this through the queue,
-/// shutdown(fd, SHUT_WR) is thread-safe - we execute it directly
-/// on the Dart thread and post the result immediately.
+/// shutdown(fd, SHUT_WR) is thread-safe - we execute it directly on the Dart
+/// thread and post the result immediately.
 export fn tcp_close_write(request_id: i64, handle: i64) i64 {
     if (!g_initialized) return TCP_ERR_NOT_INITIALIZED;
 
-    const fd = handleGetFd(handle);
-    if (fd == invalid_fd) return TCP_ERR_INVALID_HANDLE;
+    // Single-lock lookup — prevents TOCTOU where the GC finalizer could
+    // close the handle between separate fd and send_port retrievals.
+    const lookup = handleLookup(handle) orelse return TCP_ERR_INVALID_HANDLE;
 
-    const sp = handleGetSendPort(handle);
-    if (sp == 0) return TCP_ERR_INVALID_HANDLE;
-
-    const result: i64 = if (posix.system.shutdown(fd, posix.system.SHUT.WR) == 0)
+    const result: i64 = if (posix.system.shutdown(lookup.fd, posix.system.SHUT.WR) == 0)
         0
     else
         TCP_ERR_WRITE_FAILED;
 
-    postResult(sp, request_id, result);
+    postResult(lookup.send_port, request_id, result);
     return 0;
 }
 
 /// Close a connection.
 ///
 /// Executes directly on the Dart thread - close(fd) is thread-safe.
-/// In-flight xev operations on this fd will complete with errors,
-/// which the loop thread handles gracefully.
+/// In-flight xev operations on this fd will complete with errors, which the
+/// loop thread handles gracefully.
 export fn tcp_close(request_id: i64, handle: i64) i64 {
     if (!g_initialized) return TCP_ERR_NOT_INITIALIZED;
 
@@ -1119,8 +1139,8 @@ export fn tcp_close(request_id: i64, handle: i64) i64 {
 
 /// Create a listening socket.
 ///
-/// Like the IOCP backend, listen is a synchronous operation - socket,
-/// bind, and listen are all POSIX calls that complete immediately.
+/// Like the IOCP backend, listen is a synchronous operation - socket, bind, and
+/// listen are all POSIX calls that complete immediately.
 /// Only accept needs async I/O through the event loop.
 export fn tcp_listen(
     send_port: i64,
@@ -1148,7 +1168,7 @@ export fn tcp_listen(
         @enumFromInt(af),
         posix.SOCK.STREAM | posix.SOCK.NONBLOCK | posix.SOCK.CLOEXEC,
         posix.IPPROTO.TCP,
-    ) catch return TCP_ERR_BIND_FAILED;
+    ) catch return TCP_ERR_LISTEN_FAILED;
 
     // Socket options.
     if (shared) {
@@ -1200,6 +1220,28 @@ export fn tcp_accept(request_id: i64, listener_handle: i64) i64 {
     return reqSubmit(r);
 }
 
+/// Start a continuous accept loop on a listener.
+///
+/// Unlike tcp_accept which accepts ONE connection and posts a
+/// [request_id, handle, null] triple, this function continuously accepts
+/// connections and posts each one as a single int64 to a dedicated Dart
+/// RawReceivePort.
+export fn tcp_accept_loop(send_port: i64, listener_handle: i64) i64 {
+    if (!g_initialized) return TCP_ERR_NOT_INITIALIZED;
+
+    const sp = handleGetSendPort(listener_handle);
+    if (sp == 0) return TCP_ERR_INVALID_HANDLE;
+
+    const r = reqNew(.accept_loop, 0, sp, listener_handle) orelse
+        return TCP_ERR_OUT_OF_MEMORY;
+
+    r.payload = .{ .accept_loop = .{
+        .stream_port = send_port,
+    } };
+
+    return reqSubmit(r);
+}
+
 /// Close a listener - synchronous, same as tcp_close.
 export fn tcp_listener_close(
     request_id: i64,
@@ -1225,8 +1267,8 @@ export fn tcp_listener_close(
 // Exported C API - Synchronous property access
 // ═════════════════════════════════════════════════════════════════════════════
 //
-// These use the raw fd from the handle table and call standard POSIX
-// socket APIs directly.  No need to route through the loop thread.
+// These use the raw fd from the handle table and call standard POSIX socket
+// APIs directly. No need to route through the loop thread.
 // Identical across all backends.
 
 export fn tcp_get_local_address(handle: i64, out_addr: [*]u8) i64 {

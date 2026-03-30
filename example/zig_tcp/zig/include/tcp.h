@@ -1,11 +1,8 @@
-/// tcp_socket.h
 #ifndef TCP_SOCKET_H
 #define TCP_SOCKET_H
 
 #include <stdint.h>
 #include <stdbool.h>
-
-#include "dart_api.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -14,9 +11,9 @@ extern "C" {
 /*
  * On Windows, DLL symbols are hidden by default — the opposite of Linux/macOS
  * where shared library symbols are visible unless explicitly hidden. We need
- * __declspec(dllexport) on every public function so the linker adds them to
- * the DLL's export table. Without this, Dart's FFI @Native resolver fails
- * with "symbol not found" even though the function exists in the binary.
+ * __declspec(dllexport) on every public function so the linker adds them to the
+ * DLL's export table. Without this, Dart's FFI @Native resolver fails with
+ * "symbol not found" even though the function exists in the binary.
  *
  * On non-Windows platforms, TCP_EXPORT expands to nothing since symbols are
  * already visible by default. You could optionally use
@@ -30,48 +27,23 @@ extern "C" {
 #endif
 
 /* =============================================================================
- * GC-release support
- * =============================================================================
- *
- * These functions allow Dart's garbage collector to release native handle
- * table slots when Connection or Listener objects are collected without an
- * explicit close() call.
- *
- * tcp_attach_release is called from the Dart thread immediately after
- * constructing a _Connection or _Listener.  It receives the Dart object
- * as a Dart_Handle and creates a Dart_FinalizableHandle that invokes the
- * native release callback when the object is garbage-collected.
- *
- * The release callback is idempotent: if close() already freed the slot,
- * the callback sees in_use == false and returns immediately.
- */
-
-/**
- * Attach a GC-release callback to a Dart object.
- *
- * When the Dart object is collected, the VM invokes the internal release
- * callback which closes the socket and frees the handle table slot.
- *
- * @param object   Dart_Handle to the _Connection or _Listener object.
- * @param handle   1-based index into the native handle table.
- */
-TCP_EXPORT void tcp_attach_release(Dart_Handle object, int64_t handle);
-
-/* =============================================================================
  * Initialization
  * =============================================================================
  *
- * Must be called once before any other functions. This initializes the Dart
- * DL API and starts the background event loop thread. Idempotent — safe to
- * call from multiple isolates; only the first call has effect.
+ * Must be called once before any other functions. This initializes the Dart DL
+ * API and starts the background event loop thread. Idempotent — safe to call
+ * from multiple isolates; only the first call has effect.
  */
 
 /**
  * Initialize the TCP socket library with Dart API.
  *
+ * Returns 0 on success, or a negative error code if initialization failed.
+ *
  * @param dart_api_dl Pointer to Dart API DL structure
+ * @return 0 on success, negative error code on failure
  */
-TCP_EXPORT void tcp_init(void* dart_api_dl);
+TCP_EXPORT int64_t tcp_init(void* dart_api_dl);
 
 /**
  * Shut down the library: stops the event loop thread, closes all sockets,
@@ -89,8 +61,8 @@ TCP_EXPORT void tcp_destroy(void);
  * tcp_close, etc.) derive the port from the handle's stored state.
  *
  * This allows multiple Dart isolates to use the library concurrently — each
- * isolate passes its own ReceivePort's nativePort, and results are routed
- * to the correct isolate automatically.
+ * isolate passes its own ReceivePort's nativePort, and results are routed to
+ * the correct isolate automatically.
  */
 
 /**
@@ -206,14 +178,40 @@ TCP_EXPORT int64_t tcp_listen(
 /**
  * Asynchronously accept a connection from a listener.
  *
- * The accepted connection inherits the listener's send_port, so results
- * are posted to the isolate that owns the listener.
+ * The accepted connection inherits the listener's send_port, so results are
+ * posted to the isolate that owns the listener.
  *
  * @param request_id Unique ID for this request
  * @param listener_handle Listener handle
  * @return 0 on successful queue, negative error code on immediate failure
  */
 TCP_EXPORT int64_t tcp_accept(int64_t request_id, int64_t listener_handle);
+
+/**
+ * Start a continuous accept loop on a listener.
+ *
+ * Unlike tcp_accept which accepts ONE connection and posts a
+ * [request_id, handle, null] triple, this function continuously accepts
+ * connections and posts each one as a single int64 to a DEDICATED Dart
+ * RawReceivePort. This enables a push-based Stream<Connection> without polling
+ * from Dart.
+ *
+ * Message protocol (bare int64, not the [id, result, data] triple):
+ *   Positive int64 → connection handle (1-based)
+ *   Negative int64 → error code (from TCP_ERR_* constants)
+ *
+ * The loop stops automatically when:
+ *   - The listener socket is closed (accept returns error)
+ *   - The Dart ReceivePort is closed (Dart_PostCObject_DL returns false)
+ *
+ * @param send_port  Dart native port of the dedicated ReceivePort
+ * @param listener_handle  Listener handle from tcp_listen
+ * @return 0 on successful start, negative error code on immediate failure
+ */
+TCP_EXPORT int64_t tcp_accept_loop(
+    int64_t send_port,
+    int64_t listener_handle
+);
 
 /**
  * Asynchronously close a listener.

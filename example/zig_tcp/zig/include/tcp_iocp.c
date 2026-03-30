@@ -2,30 +2,30 @@
  * tcp_iocp.c — Windows IOCP implementation of the TCP socket library.
  *
  * Implements every function declared in tcp.h using Windows I/O Completion
- * Ports for asynchronous operations.  A single background thread services
- * the IOCP and posts results back to Dart via Dart_PostCObject_DL.
+ * Ports for asynchronous operations. A single background thread services the
+ * IOCP and posts results back to Dart via Dart_PostCObject_DL.
  *
  * Threading model
  * ───────────────
  *   • Dart thread  — calls the public tcp_* functions.
- *   • IOCP thread  — calls GetQueuedCompletionStatus in a loop and
- *                     dispatches completions (connect, read, write, accept).
+ *   • IOCP thread  — calls GetQueuedCompletionStatus in a loop and dispatches
+ *                    completions (connect, read, write, accept).
  *
  * Synchronous operations (listen, close_write, close, listener_close) are
- * performed on the calling (Dart) thread and post their result directly
- * via Dart_PostCObject_DL, which is thread-safe.
+ * performed on the calling (Dart) thread and post their result directly via
+ * Dart_PostCObject_DL, which is thread-safe.
  *
  * Handle table
  * ────────────
- * A fixed-size array (MAX_HANDLES) protected by a CRITICAL_SECTION stores
- * every open socket.  Handle IDs are 1-based indices so that 0 is never a
- * valid handle.
+ * A fixed-size array (MAX_HANDLES) protected by a CRITICAL_SECTION stores every
+ * open socket. Handle IDs are 1-based indices so that 0 is never a valid
+ * handle.
  */
 
 #include "tcp.h"
 
 #ifndef _WIN32
-#error "This file is Windows-only.  Use a different backend for other platforms."
+#error "This file is Windows-only. Use a different backend for other platforms."
 #endif
 
 #define WIN32_LEAN_AND_MEAN
@@ -61,6 +61,7 @@ typedef enum {
     OP_READ,
     OP_WRITE,
     OP_ACCEPT,
+    OP_ACCEPT_LOOP,
     /** Pseudo-ops posted via PostQueuedCompletionStatus, handled inline. */
     OP_CLOSE,
     OP_CLOSE_WRITE,
@@ -70,9 +71,9 @@ typedef enum {
 } OpType;
 
 /**
- * Extended OVERLAPPED carried through every IOCP completion.  The struct
- * is heap-allocated before each async operation and freed after the
- * completion has been fully processed (including partial-write reissues).
+ * Extended OVERLAPPED carried through every IOCP completion. The struct is
+ * heap-allocated before each async operation and freed after the completion has
+ * been fully processed (including partial-write reissues).
  */
 typedef struct IOContext {
     OVERLAPPED  overlapped;   /* Must be the first member. */
@@ -117,8 +118,6 @@ typedef struct {
     int64_t     send_port;
     bool        in_use;
     bool        is_listener;
-    CRITICAL_SECTION lock;
-    uint32_t    generation;
 } HandleEntry;
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -151,7 +150,7 @@ static void handle_completion(IOContext* ctx, BOOL ok, DWORD bytes_transferred, 
  * Dart message helpers
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * Posts a [requestId, result, data?] triple to a Dart ReceivePort.
+ * Posts a [requestId, result, data?] triple to a Dart RawReceivePort.
  */
 
 /** Free callback for external typed data handed to Dart. */
@@ -180,8 +179,8 @@ static void post_result(int64_t send_port, int64_t request_id, int64_t result) {
 /**
  * Post [request_id, result, Uint8List] to @p send_port.
  *
- * Ownership of @p data transfers to Dart — the GC will call free() via
- * the external-typed-data finalizer.
+ * Ownership of @p data transfers to Dart — the GC will call free() via the
+ * external-typed-data finalizer.
  */
 static void post_result_with_data(int64_t send_port, int64_t request_id,
                                   int64_t result, uint8_t* data, intptr_t length) {
@@ -202,28 +201,30 @@ static void post_result_with_data(int64_t send_port, int64_t request_id,
         .value.as_array = { .length = 3, .values = elements },
     };
 
-    Dart_PostCObject_DL(send_port, &message);
+    /* If the port is closed (isolate dead), Dart never takes ownership of the
+     * buffer and the external-typed-data finalizer never runs. Free it. */
+    if (!Dart_PostCObject_DL(send_port, &message)) {
+        free(data);
+    }
+}
+
+/**
+ * Post a single int64 to a Dart RawReceivePort.
+ *
+ * Returns true if delivered, false if the port is closed. Used by the
+ * accept-loop to detect when the Dart RawReceivePort is gone.
+ */
+static bool post_handle(int64_t send_port, int64_t handle) {
+    Dart_CObject message = {
+        .type  = Dart_CObject_kInt64,
+        .value.as_int64 = handle,
+    };
+    return Dart_PostCObject_DL(send_port, &message);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * Handle table
  * ═══════════════════════════════════════════════════════════════════════════ */
-
-/* ═══════════════════════════════════════════════════════════════════════════
- * Peer encoding for GC-release finalizers
- * ═══════════════════════════════════════════════════════════════════════════
- *
- * See tcp_io_uring.c for rationale — prevents ABA races on handle slot reuse.
- */
-
-static int64_t pack_peer(int64_t id, uint32_t generation) {
-    return ((int64_t)generation << 32) | (id & 0xFFFFFFFF);
-}
-
-static void unpack_peer(int64_t peer, int64_t* id, uint32_t* generation) {
-    *id = peer & 0xFFFFFFFF;
-    *generation = (uint32_t)((uint64_t)peer >> 32);
-}
 
 /** Allocate a handle entry, returning a 1-based ID (0 on failure). */
 static int64_t handle_alloc(SOCKET sock, int64_t send_port, bool is_listener) {
@@ -235,8 +236,6 @@ static int64_t handle_alloc(SOCKET sock, int64_t send_port, bool is_listener) {
             g_handles[i].send_port   = send_port;
             g_handles[i].in_use      = true;
             g_handles[i].is_listener = is_listener;
-            g_handles[i].generation++;
-            InitializeCriticalSection(&g_handles[i].lock);
             LeaveCriticalSection(&g_handles_lock);
             return (int64_t)(i + 1);
         }
@@ -246,26 +245,12 @@ static int64_t handle_alloc(SOCKET sock, int64_t send_port, bool is_listener) {
     return 0; /* No free slots. */
 }
 
-/** Free a handle entry. */
-static void handle_free(int64_t id) {
-    if (id < 1 || id > MAX_HANDLES) return;
-    int idx = (int)(id - 1);
-
-    EnterCriticalSection(&g_handles_lock);
-    if (g_handles[idx].in_use) {
-        DeleteCriticalSection(&g_handles[idx].lock);
-        g_handles[idx].in_use = false;
-        g_handles[idx].socket = INVALID_SOCKET;
-    }
-    LeaveCriticalSection(&g_handles_lock);
-}
-
 /**
  * Atomically retrieve the socket and send_port for a handle, then free the
  * slot.
  *
  * Returns true if the handle was still active (socket and send_port are
- * written).  Returns false if already freed.
+ * written). Returns false if already freed.
  */
 static bool handle_close(int64_t id, SOCKET* out_socket, int64_t* out_send_port) {
     if (id < 1 || id > MAX_HANDLES) return false;
@@ -280,7 +265,6 @@ static bool handle_close(int64_t id, SOCKET* out_socket, int64_t* out_send_port)
 
     *out_socket    = g_handles[idx].socket;
     *out_send_port = g_handles[idx].send_port;
-    DeleteCriticalSection(&g_handles[idx].lock);
     g_handles[idx].in_use = false;
     g_handles[idx].socket = INVALID_SOCKET;
 
@@ -310,72 +294,20 @@ static int64_t handle_get_send_port(int64_t id) {
     return port;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- * GC-release callback
- * ═══════════════════════════════════════════════════════════════════════════
- *
- * Called by the Dart VM when a _Connection or _Listener object is garbage-
- * collected without an explicit close().
- *
- * The peer value encodes both the handle ID and the generation counter from
- * when the finalizer was attached.  If the slot's generation has advanced
- * (i.e. the slot was freed and reused by a different object), the callback
- * returns without touching the new owner's resources.
- *
- * Thread safety: may be called from any thread the GC runs on.  All
- * handle table access goes through g_handles_lock.
- */
-static void release_handle_callback(void* isolate_callback_data, void* peer) {
-    (void)isolate_callback_data;
-
-    int64_t raw = (int64_t)(intptr_t)peer;
-    int64_t id;
-    uint32_t gen;
-    unpack_peer(raw, &id, &gen);
-
-    if (id < 1 || id > MAX_HANDLES) return;
-
+/** Look up both socket and send_port in a single lock acquisition. */
+static bool handle_lookup(int64_t id, SOCKET* out_socket, int64_t* out_send_port) {
+    if (id < 1 || id > MAX_HANDLES) return false;
     int idx = (int)(id - 1);
 
     EnterCriticalSection(&g_handles_lock);
-
-    if (!g_handles[idx].in_use || g_handles[idx].generation != gen) {
-        /* Already closed, or slot was recycled by a new object. */
+    if (!g_handles[idx].in_use) {
         LeaveCriticalSection(&g_handles_lock);
-        return;
+        return false;
     }
-
-    SOCKET sock = g_handles[idx].socket;
-    DeleteCriticalSection(&g_handles[idx].lock);
-    g_handles[idx].in_use = false;
-    g_handles[idx].socket = INVALID_SOCKET;
-
+    *out_socket    = g_handles[idx].socket;
+    *out_send_port = g_handles[idx].send_port;
     LeaveCriticalSection(&g_handles_lock);
-
-    if (sock != INVALID_SOCKET) {
-        CancelIoEx((HANDLE)sock, NULL);
-        closesocket(sock);
-    }
-}
-
-/**
- * Attach a GC-release callback to a Dart object.
- *
- * The peer value encodes both the handle ID and the current generation,
- * so the callback can detect slot reuse (ABA) and skip stale releases.
- */
-TCP_EXPORT void tcp_attach_release(Dart_Handle object, int64_t handle) {
-    if (handle < 1 || handle > MAX_HANDLES) return;
-
-    int idx = (int)(handle - 1);
-
-    EnterCriticalSection(&g_handles_lock);
-    uint32_t gen = g_handles[idx].generation;
-    LeaveCriticalSection(&g_handles_lock);
-
-    void* peer = (void*)(intptr_t)pack_peer(handle, gen);
-
-    Dart_NewFinalizableHandle_DL(object, peer, 0, release_handle_callback);
+    return true;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -591,6 +523,95 @@ static void handle_completion(IOContext* ctx, BOOL ok, DWORD bytes_transferred,
         return;
     }
 
+    /* ─── Accept Loop (continuous) ───────────────────────────────────── */
+    case OP_ACCEPT_LOOP: {
+        if (!ok) {
+            closesocket(ctx->accept.accept_socket);
+            post_handle(ctx->send_port, TCP_ERR_ACCEPT_FAILED);
+            free(ctx);
+            return;
+        }
+
+        SOCKET accepted = ctx->accept.accept_socket;
+
+        setsockopt(accepted, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT,
+                   (char*)&ctx->socket, sizeof(ctx->socket));
+
+        CreateIoCompletionPort((HANDLE)accepted, g_iocp, CK_CUSTOM, 0);
+
+        /* Use the listener's stored send_port for the connection so that
+         * reads/writes route to the correct isolate's _IOService. */
+        int64_t conn_port = handle_get_send_port(ctx->handle_id);
+        if (conn_port == 0) conn_port = ctx->send_port;
+
+        int64_t id = handle_alloc(accepted, conn_port, false);
+        if (id == 0) {
+            closesocket(accepted);
+            post_handle(ctx->send_port, TCP_ERR_OUT_OF_MEMORY);
+            free(ctx);
+            return;
+        }
+
+        if (!post_handle(ctx->send_port, id)) {
+            /* RawReceivePort closed — nobody will ever close this connection.
+             * Free the handle slot and close the socket to avoid leaking. */
+            SOCKET close_sock;
+            int64_t close_sp;
+            if (handle_close(id, &close_sock, &close_sp)) {
+                if (close_sock != INVALID_SOCKET) {
+                    CancelIoEx((HANDLE)close_sock, NULL);
+                    closesocket(close_sock);
+                }
+            }
+            free(ctx);
+            return;
+        }
+
+        /* ── Re-arm: create a new accept socket and issue AcceptEx ──── */
+        WSAPROTOCOL_INFOW info;
+        int info_len = sizeof(info);
+        if (getsockopt(ctx->socket, SOL_SOCKET, SO_PROTOCOL_INFOW,
+                       (char*)&info, &info_len) == SOCKET_ERROR) {
+            post_handle(ctx->send_port, TCP_ERR_ACCEPT_FAILED);
+            free(ctx);
+            return;
+        }
+
+        SOCKET next_sock = create_socket(info.iAddressFamily);
+        if (next_sock == INVALID_SOCKET) {
+            post_handle(ctx->send_port, TCP_ERR_ACCEPT_FAILED);
+            free(ctx);
+            return;
+        }
+
+        ctx->accept.accept_socket = next_sock;
+        memset(&ctx->overlapped, 0, sizeof(OVERLAPPED));
+        memset(ctx->accept.buffer, 0, sizeof(ctx->accept.buffer));
+
+        DWORD received   = 0;
+        DWORD local_len  = sizeof(SOCKADDR_STORAGE) + 16;
+        DWORD remote_len = sizeof(SOCKADDR_STORAGE) + 16;
+
+        BOOL ret = g_AcceptEx(
+            ctx->socket, next_sock,
+            ctx->accept.buffer, 0,
+            local_len, remote_len,
+            &received, &ctx->overlapped);
+
+        if (!ret) {
+            DWORD err = WSAGetLastError();
+            if (err != ERROR_IO_PENDING) {
+                closesocket(next_sock);
+                post_handle(ctx->send_port, TCP_ERR_ACCEPT_FAILED);
+                free(ctx);
+                return;
+            }
+        }
+
+        /* Don't free ctx — it's reused for the next completion. */
+        return;
+    }
+
     default:
         /* Should never reach here — sync ops are not dispatched through IOCP. */
         free(ctx);
@@ -638,11 +659,11 @@ static DWORD WINAPI iocp_thread_proc(LPVOID param) {
  * Initialization / Destruction
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-TCP_EXPORT void tcp_init(void* dart_api_dl) {
+TCP_EXPORT int64_t tcp_init(void* dart_api_dl) {
     /*
      * One-time, process-wide init-lock bootstrap.
-     * InitOnceExecuteOnce would be cleaner but this is simpler and matches
-     * the "idempotent from multiple isolates" contract.
+     * InitOnceExecuteOnce would be cleaner but this is simpler and matches the
+     * "idempotent from multiple isolates" contract.
      */
     if (!g_init_lock_ready) {
         InitializeCriticalSection(&g_init_lock);
@@ -655,14 +676,17 @@ TCP_EXPORT void tcp_init(void* dart_api_dl) {
         /* Re-init the Dart DL API for this isolate (safe & required). */
         Dart_InitializeApiDL(dart_api_dl);
         LeaveCriticalSection(&g_init_lock);
-        return;
+        return 0;
     }
 
     Dart_InitializeApiDL(dart_api_dl);
 
     /* Winsock startup. */
     WSADATA wsa;
-    WSAStartup(MAKEWORD(2, 2), &wsa);
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        LeaveCriticalSection(&g_init_lock);
+        return TCP_ERR_NOT_INITIALIZED;
+    }
 
     /* Handle table. */
     InitializeCriticalSection(&g_handles_lock);
@@ -672,15 +696,29 @@ TCP_EXPORT void tcp_init(void* dart_api_dl) {
     }
 
     /* Extension function pointers. */
-    load_extensions();
+    if (!load_extensions()) {
+        LeaveCriticalSection(&g_init_lock);
+        return TCP_ERR_NOT_INITIALIZED;
+    }
 
     /* IOCP and worker thread. */
     g_iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1);
+    if (!g_iocp) {
+        LeaveCriticalSection(&g_init_lock);
+        return TCP_ERR_NOT_INITIALIZED;
+    }
 
     g_thread = CreateThread(NULL, 0, iocp_thread_proc, NULL, 0, NULL);
+    if (!g_thread) {
+        CloseHandle(g_iocp);
+        g_iocp = NULL;
+        LeaveCriticalSection(&g_init_lock);
+        return TCP_ERR_NOT_INITIALIZED;
+    }
 
     g_initialized = true;
     LeaveCriticalSection(&g_init_lock);
+    return 0;
 }
 
 TCP_EXPORT void tcp_destroy(void) {
@@ -708,7 +746,6 @@ TCP_EXPORT void tcp_destroy(void) {
     for (int i = 0; i < MAX_HANDLES; i++) {
         if (g_handles[i].in_use && g_handles[i].socket != INVALID_SOCKET) {
             closesocket(g_handles[i].socket);
-            DeleteCriticalSection(&g_handles[i].lock);
             g_handles[i].in_use = false;
             g_handles[i].socket = INVALID_SOCKET;
         }
@@ -753,8 +790,8 @@ TCP_EXPORT int64_t tcp_connect(
     if (sock == INVALID_SOCKET) return TCP_ERR_CONNECT_FAILED;
 
     /*
-     * ConnectEx requires the socket to be bound first.  If the caller
-     * supplied a source address, use it; otherwise bind to INADDR_ANY:0.
+     * ConnectEx requires the socket to be bound first. If the caller supplied a
+     * source address, use it; otherwise bind to INADDR_ANY:0.
      */
     struct sockaddr_storage bind_addr;
     int bind_len;
@@ -792,7 +829,7 @@ TCP_EXPORT int64_t tcp_connect(
 
     /*
      * Associate the socket with IOCP *before* calling ConnectEx so the
-     * completion is routed correctly.  After ConnectEx succeeds, we call
+     * completion is routed correctly. After ConnectEx succeeds, we call
      * SO_UPDATE_CONNECT_CONTEXT in the completion handler to make
      * getpeername/shutdown work.
      */
@@ -835,11 +872,9 @@ TCP_EXPORT int64_t tcp_connect(
 TCP_EXPORT int64_t tcp_read(int64_t request_id, int64_t handle) {
     if (!g_initialized) return TCP_ERR_NOT_INITIALIZED;
 
-    SOCKET sock = handle_get_socket(handle);
-    if (sock == INVALID_SOCKET) return TCP_ERR_INVALID_HANDLE;
-
-    int64_t send_port = handle_get_send_port(handle);
-    if (send_port == 0) return TCP_ERR_INVALID_HANDLE;
+    SOCKET sock;
+    int64_t send_port;
+    if (!handle_lookup(handle, &sock, &send_port)) return TCP_ERR_INVALID_HANDLE;
 
     uint8_t* buffer = (uint8_t*)malloc(READ_BUFFER_SIZE);
     if (!buffer) return TCP_ERR_OUT_OF_MEMORY;
@@ -882,11 +917,9 @@ TCP_EXPORT int64_t tcp_write(
 ) {
     if (!g_initialized) return TCP_ERR_NOT_INITIALIZED;
 
-    SOCKET sock = handle_get_socket(handle);
-    if (sock == INVALID_SOCKET) return TCP_ERR_INVALID_HANDLE;
-
-    int64_t send_port = handle_get_send_port(handle);
-    if (send_port == 0) return TCP_ERR_INVALID_HANDLE;
+    SOCKET sock;
+    int64_t send_port;
+    if (!handle_lookup(handle, &sock, &send_port)) return TCP_ERR_INVALID_HANDLE;
 
     if (!data || count <= 0) return TCP_ERR_INVALID_ARGUMENT;
 
@@ -927,11 +960,9 @@ TCP_EXPORT int64_t tcp_write(
 TCP_EXPORT int64_t tcp_close_write(int64_t request_id, int64_t handle) {
     if (!g_initialized) return TCP_ERR_NOT_INITIALIZED;
 
-    SOCKET sock = handle_get_socket(handle);
-    if (sock == INVALID_SOCKET) return TCP_ERR_INVALID_HANDLE;
-
-    int64_t send_port = handle_get_send_port(handle);
-    if (send_port == 0) return TCP_ERR_INVALID_HANDLE;
+    SOCKET sock;
+    int64_t send_port;
+    if (!handle_lookup(handle, &sock, &send_port)) return TCP_ERR_INVALID_HANDLE;
 
     int ret = shutdown(sock, SD_SEND);
     int64_t result = (ret == SOCKET_ERROR) ? TCP_ERR_WRITE_FAILED : 0;
@@ -1036,15 +1067,14 @@ TCP_EXPORT int64_t tcp_accept(int64_t request_id, int64_t listener_handle) {
     if (!g_initialized) return TCP_ERR_NOT_INITIALIZED;
     if (!g_AcceptEx)    return TCP_ERR_NOT_INITIALIZED;
 
-    SOCKET listener = handle_get_socket(listener_handle);
-    if (listener == INVALID_SOCKET) return TCP_ERR_INVALID_HANDLE;
-
-    int64_t send_port = handle_get_send_port(listener_handle);
-    if (send_port == 0) return TCP_ERR_INVALID_HANDLE;
+    SOCKET listener;
+    int64_t send_port;
+    if (!handle_lookup(listener_handle, &listener, &send_port))
+        return TCP_ERR_INVALID_HANDLE;
 
     /*
-     * Determine the address family of the listening socket so we create
-     * the accept socket in the same family.
+     * Determine the address family of the listening socket so we create the
+     * accept socket in the same family.
      */
     WSAPROTOCOL_INFOW info;
     int info_len = sizeof(info);
@@ -1072,6 +1102,59 @@ TCP_EXPORT int64_t tcp_accept(int64_t request_id, int64_t listener_handle) {
     BOOL ret = g_AcceptEx(
         listener, accept_sock,
         ctx->accept.buffer, 0, /* Don't receive data with the accept. */
+        local_len, remote_len,
+        &received, &ctx->overlapped);
+
+    if (!ret) {
+        DWORD err = WSAGetLastError();
+        if (err != ERROR_IO_PENDING) {
+            closesocket(accept_sock);
+            free(ctx);
+            return TCP_ERR_ACCEPT_FAILED;
+        }
+    }
+
+    return 0;
+}
+
+TCP_EXPORT int64_t tcp_accept_loop(
+    int64_t send_port,
+    int64_t listener_handle
+) {
+    if (!g_initialized) return TCP_ERR_NOT_INITIALIZED;
+    if (!g_AcceptEx)    return TCP_ERR_NOT_INITIALIZED;
+
+    SOCKET listener = handle_get_socket(listener_handle);
+    if (listener == INVALID_SOCKET) return TCP_ERR_INVALID_HANDLE;
+
+    /* Determine the address family of the listening socket so the pre-created
+     * accept socket matches. */
+    WSAPROTOCOL_INFOW info;
+    int info_len = sizeof(info);
+    if (getsockopt(listener, SOL_SOCKET, SO_PROTOCOL_INFOW,
+                   (char*)&info, &info_len) == SOCKET_ERROR) {
+        return TCP_ERR_ACCEPT_FAILED;
+    }
+
+    SOCKET accept_sock = create_socket(info.iAddressFamily);
+    if (accept_sock == INVALID_SOCKET) return TCP_ERR_ACCEPT_FAILED;
+
+    IOContext* ctx = ctx_alloc(OP_ACCEPT_LOOP, 0 /* no request_id */,
+                               send_port, listener_handle, listener);
+    if (!ctx) {
+        closesocket(accept_sock);
+        return TCP_ERR_OUT_OF_MEMORY;
+    }
+
+    ctx->accept.accept_socket = accept_sock;
+
+    DWORD received   = 0;
+    DWORD local_len  = sizeof(SOCKADDR_STORAGE) + 16;
+    DWORD remote_len = sizeof(SOCKADDR_STORAGE) + 16;
+
+    BOOL ret = g_AcceptEx(
+        listener, accept_sock,
+        ctx->accept.buffer, 0,
         local_len, remote_len,
         &received, &ctx->overlapped);
 

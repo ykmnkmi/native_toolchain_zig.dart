@@ -98,8 +98,7 @@ final class Tokenizer {
     if (char == 0x2E /* . */ ) {
       offset += 1;
 
-      if (offset < source.length &&
-          source.codeUnitAt(offset) == 0x7B /* { */ ) {
+      if (offset < source.length && source.codeUnitAt(offset) == 0x7B /* { */ ) {
         offset += 1;
         return Token(TokenType.dotLBrace, '.{', start);
       }
@@ -128,17 +127,13 @@ final class Tokenizer {
     }
 
     // Multiline string literal \\
-    if (char == 0x5C /* \ */ &&
-        offset + 1 < source.length &&
-        source.codeUnitAt(offset + 1) == 0x5C /* \ */ ) {
+    if (char == 0x5C /* \ */ && offset + 1 < source.length && source.codeUnitAt(offset + 1) == 0x5C /* \ */ ) {
       return readMultilineString(start);
     }
 
     // Number (digit or leading minus)
     if (isDigit(char) ||
-        (char == 0x2D /* - */ &&
-            offset + 1 < source.length &&
-            isDigit(source.codeUnitAt(offset + 1)))) {
+        (char == 0x2D /* - */ && offset + 1 < source.length && isDigit(source.codeUnitAt(offset + 1)))) {
       return readNumber(start);
     }
 
@@ -180,9 +175,7 @@ final class Tokenizer {
       }
 
       // Line comment: //
-      if (char == 0x2F /* / */ &&
-          offset + 1 < source.length &&
-          source.codeUnitAt(offset + 1) == 0x2F) {
+      if (char == 0x2F /* / */ && offset + 1 < source.length && source.codeUnitAt(offset + 1) == 0x2F) {
         offset += 2;
 
         while (offset < source.length && source.codeUnitAt(offset) != 0x0A) {
@@ -334,8 +327,7 @@ final class Tokenizer {
   }
 
   Token readIdentifier(int start) {
-    while (offset < source.length &&
-        isIdentifierPart(source.codeUnitAt(offset))) {
+    while (offset < source.length && isIdentifierPart(source.codeUnitAt(offset))) {
       offset += 1;
     }
 
@@ -351,9 +343,7 @@ final class Tokenizer {
   }
 
   static bool isIdentifierStart(int char) {
-    return (char >= 0x61 && char <= 0x7A) ||
-        (char >= 0x41 && char <= 0x5A) ||
-        char == 0x5F;
+    return (char >= 0x61 && char <= 0x7A) || (char >= 0x41 && char <= 0x5A) || char == 0x5F;
   }
 
   static bool isIdentifierPart(int char) {

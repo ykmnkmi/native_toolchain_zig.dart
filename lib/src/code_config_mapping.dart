@@ -3,10 +3,8 @@ import 'package:code_assets/code_assets.dart';
 extension CodeConfigMapping on CodeConfig {
   LinkMode get linkMode {
     return switch (linkModePreference) {
-      LinkModePreference.dynamic ||
-      LinkModePreference.preferDynamic => DynamicLoadingBundled(),
-      LinkModePreference.static ||
-      LinkModePreference.preferStatic => StaticLinking(),
+      LinkModePreference.dynamic || LinkModePreference.preferDynamic => DynamicLoadingBundled(),
+      LinkModePreference.static || LinkModePreference.preferStatic => StaticLinking(),
       _ => throw UnsupportedError(
         'Unsupported link mode: $linkModePreference.',
       ),

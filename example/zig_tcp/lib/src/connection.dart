@@ -227,9 +227,7 @@ final class _Connection implements Connection, _NativeHandle {
       var pointer = calloc<Uint8>(effectiveCount);
 
       try {
-        for (var i = 0; i < effectiveCount; i++) {
-          pointer[i] = data[offset + i];
-        }
+        pointer.asTypedList(effectiveCount).setRange(0, effectiveCount, data, offset);
 
         var code = tcp_write(id, handle, pointer, 0, effectiveCount);
         SocketException.checkResult(code);
