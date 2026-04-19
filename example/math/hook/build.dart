@@ -11,8 +11,8 @@ Future<void> main(List<String> args) async {
 
   await build(args, (input, output) async {
     await ZigBuilder(
-      assetName: 'zig_math.dart',
+      assetName: 'math.dart',
       zigDir: 'zig',
-    ).run(input: input, output: output, logger: Logger('zig_math'));
+    ).run(input: input, output: output, logger: Logger('math'));
   });
 }

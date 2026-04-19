@@ -1,7 +1,7 @@
 .{
-    .name = .zig_math,
+    .name = .math,
     .version = "0.1.0",
-    .fingerprint = 0x614de7aee616e7e4,
+    .fingerprint = 0xa927044df3696f46,
     .minimum_zig_version = "0.15.0",
     .paths = .{
         "src",

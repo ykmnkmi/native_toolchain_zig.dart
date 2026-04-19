@@ -1,9 +1,9 @@
 import 'dart:ffi';
 
-@Native<Int32 Function(Int32, Int32)>()
+@Native<Int64 Function(Int64, Int64)>()
 external int add(int a, int b);
 
-@Native<Int32 Function(Int32, Int32)>()
+@Native<Int64 Function(Int64, Int64)>()
 external int subtract(int a, int b);
 
 @Native<Double Function(Double, Double)>()
@@ -21,13 +21,13 @@ external int fibonacci(int n);
 @Native<Uint64 Function(Uint64, Uint64)>()
 external int gcd(int a, int b);
 
-@Native<Double Function(Double, Int32)>()
+@Native<Double Function(Double, Int64)>()
 external double power(double base, int exp);
 
-@Native<Double Function(Double)>()
+@Native<Double Function(Double)>(symbol: 'sqrt_')
 external double sqrt(double x);
 
-@Native<Int32 Function(Int32)>(symbol: 'abs_int')
+@Native<Int64 Function(Int64)>(symbol: 'abs_int')
 external int absInt(int x);
 
 @Native<Double Function(Double)>(symbol: 'abs_float')

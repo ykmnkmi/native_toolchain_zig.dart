@@ -1,4 +1,4 @@
-name: zig_math
+name: math
 description: Example demonstrating native_toolchain_zig usage.
 version: 0.1.0
 

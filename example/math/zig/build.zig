@@ -14,7 +14,7 @@ pub fn build(b: *std.Build) void {
 
     // Dynamic library (.so, .dylib, .dll)
     const dynamic_lib = b.addLibrary(.{
-        .name = "zig_math",
+        .name = "math",
         .linkage = .dynamic,
         .root_module = root_module,
     });
@@ -23,7 +23,7 @@ pub fn build(b: *std.Build) void {
 
     // Static library (.a, .lib)
     const static_lib = b.addLibrary(.{
-        .name = "zig_math",
+        .name = "math",
         .linkage = .static,
         .root_module = root_module,
     });

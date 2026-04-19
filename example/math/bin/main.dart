@@ -1,4 +1,4 @@
-import 'package:zig_math/zig_math.dart';
+import 'package:math/math.dart';
 
 void main() {
   print('Zig Math Library Demo');
