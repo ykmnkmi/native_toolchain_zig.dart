@@ -498,18 +498,15 @@ Object parseNumber(String raw) {
   String magnitude = negative ? cleaned.substring(1) : cleaned;
 
   if (magnitude.startsWith('0x')) {
-    int value = int.parse(magnitude.substring(2), radix: 16);
-    return negative ? -value : value;
+    return _parseInteger(magnitude.substring(2), negative, 16);
   }
 
   if (magnitude.startsWith('0o')) {
-    int value = int.parse(magnitude.substring(2), radix: 8);
-    return negative ? -value : value;
+    return _parseInteger(magnitude.substring(2), negative, 8);
   }
 
   if (magnitude.startsWith('0b')) {
-    int value = int.parse(magnitude.substring(2), radix: 2);
-    return negative ? -value : value;
+    return _parseInteger(magnitude.substring(2), negative, 2);
   }
 
   if (cleaned.contains('.') || cleaned.contains('e') || cleaned.contains('E')) {
@@ -517,4 +514,14 @@ Object parseNumber(String raw) {
   }
 
   return int.parse(cleaned);
+}
+
+Object _parseInteger(String source, bool negative, int radix) {
+  try {
+    int value = int.parse(source, radix: radix);
+    return negative ? -value : value;
+  } on FormatException {
+    BigInt value = BigInt.parse(source, radix: radix);
+    return negative ? -value : value;
+  }
 }
