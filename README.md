@@ -8,9 +8,10 @@ Zig support for Dart's [build hooks][dart_hooks].
 Automatically builds and bundles your Zig code with your Dart/Flutter application.
 
 > [!NOTE]
-> If you want to use `ffigen` to auto-generate Dart bindings, you'll need to
-> manually write a C header file. Automatic header generation from Zig is
-> currently blocked by ziglang/zig#9698.
+> Zig 0.14 and 0.15 do not currently provide a reliable `-femit-h` path for
+> generating C headers from exported Zig declarations. This package includes a
+> source-first bindings generator so package authors do not need to maintain a
+> handwritten C header just to feed `ffigen`.
 
 ### Prerequisites
 
@@ -206,13 +207,28 @@ export fn add(a: i32, b: i32) i32 {
 }
 ```
 
-6. Create Dart bindings in `lib/my_package.dart`:
+6. Generate Dart bindings in `lib/my_package.dart`:
 
-```dart
-import 'dart:ffi';
+```bash
+dart run native_toolchain_zig:zig bindings --output lib/my_package.dart
+```
 
-@Native<Int32 Function(Int32, Int32)>()
-external int add(int a, int b);
+The generator discovers exported Zig declarations and emits Dart `@Native`
+bindings that use the same native asset ID registered by `ZigBuilder`.
+
+You can also pass explicit paths:
+
+```bash
+dart run native_toolchain_zig:zig bindings \
+  --zig-dir zig \
+  --root-source-file src/lib.zig \
+  --output lib/my_package.dart
+```
+
+During development, use watch mode:
+
+```bash
+dart run native_toolchain_zig:zig bindings --watch
 ```
 
 7. Run your app:

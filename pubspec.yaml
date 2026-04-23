@@ -2,7 +2,7 @@ name: native_toolchain_zig
 description: >
   Zig support for Dart's build hooks.
   Automatically builds and bundles your Zig code with your Dart/Flutter application.
-version: 0.1.1
+version: 0.2.0-wip
 homepage: https://github.com/ykmnkmi/native_toolchain_zig.dart
 repository: https://github.com/ykmnkmi/native_toolchain_zig.dart
 issue_tracker: https://github.com/ykmnkmi/native_toolchain_zig.dart/issues
@@ -22,6 +22,7 @@ topics:
   - native-toolchain
 
 dependencies:
+  args: ^2.7.0
   code_assets: ^1.0.0
   ffi: ^2.2.0
   hooks: ^1.0.1
