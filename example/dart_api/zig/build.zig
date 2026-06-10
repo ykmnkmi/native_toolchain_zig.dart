@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const dynamic_lib = b.addLibrary(.{
-        .name = "zig_dart_api",
+        .name = "dart_api",
         .linkage = .dynamic,
         .root_module = root_module,
     });
@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(dynamic_lib);
 
     const static_lib = b.addLibrary(.{
-        .name = "zig_dart_api",
+        .name = "dart_api",
         .linkage = .static,
         .root_module = root_module,
     });

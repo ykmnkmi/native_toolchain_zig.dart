@@ -11,8 +11,8 @@ environment:
   sdk: ^3.11.0
 
 workspace:
+  - example/dart_api
   - example/math
-  - example/zig_dart_api
 
 topics:
   - zig
