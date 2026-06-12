@@ -1,4 +1,4 @@
-name: zig_dart_api
+name: dart_api
 description: Example demonstrating native_toolchain_zig usage.
 version: 0.1.0
 
