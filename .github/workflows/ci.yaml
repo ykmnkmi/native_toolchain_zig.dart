@@ -59,7 +59,7 @@ jobs:
 
       - name: Build Zig Dart API example
         run: zig build
-        working-directory: example/zig_dart_api/zig
+        working-directory: example/dart_api/zig
 
       - name: Run tests
         run: dart test -P ci
