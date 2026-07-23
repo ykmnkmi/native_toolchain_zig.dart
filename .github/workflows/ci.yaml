@@ -61,5 +61,9 @@ jobs:
         run: zig build
         working-directory: example/dart_api/zig
 
+      - name: Run bindings example
+        run: dart run bindings:main
+        working-directory: example/bindings
+
       - name: Run tests
         run: dart test -P ci
