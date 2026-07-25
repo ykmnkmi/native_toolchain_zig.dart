@@ -9,7 +9,7 @@ import 'package:bindings/ffi.g.dart';
 class CounterWrapper {
   /// Creates a native counter starting at [initial] and incrementing by [step].
   CounterWrapper({int initial = 0, int step = 1})
-      : _pointer = counter_create(initial, step);
+    : _pointer = counter_create(initial, step);
 
   final Pointer<Counter> _pointer;
 

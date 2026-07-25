@@ -13,13 +13,16 @@ final class Counter extends ffi.Struct {
 
   @ffi.Int64()
   external int step;
-
 }
 
-@ffi.Native<ffi.Pointer<Counter> Function(ffi.Int64, ffi.Int64)>(symbol: 'counter_create')
+@ffi.Native<ffi.Pointer<Counter> Function(ffi.Int64, ffi.Int64)>(
+  symbol: 'counter_create',
+)
 external ffi.Pointer<Counter> counter_create(int initial, int step);
 
-@ffi.Native<ffi.Void Function(ffi.Pointer<Counter>)>(symbol: 'counter_increment')
+@ffi.Native<ffi.Void Function(ffi.Pointer<Counter>)>(
+  symbol: 'counter_increment',
+)
 external void counter_increment(ffi.Pointer<Counter> counter);
 
 @ffi.Native<ffi.Int64 Function(ffi.Pointer<Counter>)>(symbol: 'counter_get')
@@ -34,5 +37,7 @@ external int add(int a, int b);
 @ffi.Native<ffi.Double Function(ffi.Double, ffi.Double)>(symbol: 'multiply')
 external double multiply(double a, double b);
 
-@ffi.Native<ffi.Int64 Function(ffi.Int64, ffi.Int64, ffi.Int64)>(symbol: 'clamp_value')
+@ffi.Native<ffi.Int64 Function(ffi.Int64, ffi.Int64, ffi.Int64)>(
+  symbol: 'clamp_value',
+)
 external int clamp_value(int value, int min_val, int max_val);
