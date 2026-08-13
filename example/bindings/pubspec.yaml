@@ -1,5 +1,5 @@
-name: math
-description: Example demonstrating native_toolchain_zig usage.
+name: bindings
+description: Example demonstrating the Dart FFI bindings generator for Zig.
 version: 0.1.0
 
 publish_to: none

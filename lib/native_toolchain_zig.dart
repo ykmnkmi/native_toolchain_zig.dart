@@ -140,5 +140,12 @@ library;
 
 import 'src/builder.dart' show ZigBuilder;
 
+export 'src/bindings_generator.dart'
+    show
+        GeneratedBindingsResult,
+        ZigBindingsOptions,
+        generateBindings,
+        generateBindingsSource,
+        watchBindings;
 export 'src/builder.dart' show ZigBuilder;
 export 'src/target.dart' show Target, Optimization;
