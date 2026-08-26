@@ -1,4 +1,4 @@
-## 0.2.0-wip
+## 0.2.0
 
 - Add a Zig source generator that emits Dart `@Native` FFI bindings from
   exported Zig declarations.
@@ -6,6 +6,8 @@
   mode.
 - Bundle a Zig metadata dumper used by the generator instead of relying on
   Zig's currently unavailable header emission.
+- Bump SDK version to 3.13.0.
+- Bump dependencies.
 
 ## 0.1.1
 
