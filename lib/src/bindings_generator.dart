@@ -11,7 +11,7 @@ import 'package:path/path.dart' as path;
 /// Configuration for generating Dart FFI bindings from a Zig package.
 final class ZigBindingsOptions {
   /// Creates a bindings generation request.
-  const ZigBindingsOptions({
+  const new({
     required this.packageRoot,
     required this.output,
     this.zigDirectory,
@@ -42,7 +42,7 @@ final class ZigBindingsOptions {
 /// In-memory result of generating Dart bindings for a Zig package.
 final class GeneratedBindingsResult {
   /// Creates a generated bindings result.
-  const GeneratedBindingsResult({
+  const new({
     required this.rootSourceFilePath,
     required this.outputPath,
     required this.assetId,
@@ -426,7 +426,7 @@ const _commonRootSourceFileCandidates = <String>[
 ];
 
 final class _ZigApiDescription {
-  const _ZigApiDescription({
+  const new({
     required this.libraryComments,
     required this.dependencies,
     required this.types,
@@ -434,7 +434,7 @@ final class _ZigApiDescription {
     required this.globals,
   });
 
-  factory _ZigApiDescription.fromJson(Map<String, Object?> json) {
+  factory fromJson(Map<String, Object?> json) {
     return _ZigApiDescription(
       libraryComments: _parseCommentBlock(json['library_comments']),
       dependencies: _parseStringList(json['dependencies']),
@@ -516,7 +516,7 @@ final class _ZigApiDescription {
 enum _ZigContainerKind { structType, unionType, enumType }
 
 final class _ZigTypeDecl {
-  const _ZigTypeDecl({
+  const new({
     required this.name,
     required this.kind,
     required this.layout,
@@ -525,7 +525,7 @@ final class _ZigTypeDecl {
     required this.comments,
   });
 
-  factory _ZigTypeDecl.fromJson(Map<String, Object?> json) {
+  factory fromJson(Map<String, Object?> json) {
     return _ZigTypeDecl(
       name: json['name']! as String,
       kind: switch (json['kind']) {
@@ -585,7 +585,7 @@ final class _ZigTypeDecl {
 }
 
 final class _ZigEnumCase {
-  const _ZigEnumCase({
+  const new({
     required this.name,
     required this.value,
     required this.comments,
@@ -597,7 +597,7 @@ final class _ZigEnumCase {
 }
 
 final class _ZigMember {
-  const _ZigMember({
+  const new({
     required this.name,
     required this.typeSource,
     required this.valueSource,
@@ -605,7 +605,7 @@ final class _ZigMember {
     required this.comments,
   });
 
-  factory _ZigMember.fromJson(Map<String, Object?> json) {
+  factory fromJson(Map<String, Object?> json) {
     final typeSource = json['type'] as String?;
     return _ZigMember(
       name: json['name']! as String,
@@ -624,7 +624,7 @@ final class _ZigMember {
 }
 
 final class _ZigFunctionDecl {
-  const _ZigFunctionDecl({
+  const new({
     required this.name,
     required this.returnTypeSource,
     required this.returnType,
@@ -632,7 +632,7 @@ final class _ZigFunctionDecl {
     required this.comments,
   });
 
-  factory _ZigFunctionDecl.fromJson(Map<String, Object?> json) {
+  factory fromJson(Map<String, Object?> json) {
     final returnTypeSource = json['return_type']! as String;
     return _ZigFunctionDecl(
       name: json['name']! as String,
@@ -655,14 +655,14 @@ final class _ZigFunctionDecl {
 }
 
 final class _ZigParameter {
-  const _ZigParameter({
+  const new({
     required this.name,
     required this.typeSource,
     required this.type,
     required this.comments,
   });
 
-  factory _ZigParameter.fromJson(Map<String, Object?> json) {
+  factory fromJson(Map<String, Object?> json) {
     final typeSource = json['type']! as String;
     return _ZigParameter(
       name: json['name']! as String,
@@ -679,7 +679,7 @@ final class _ZigParameter {
 }
 
 final class _ZigGlobalDecl {
-  const _ZigGlobalDecl({
+  const new({
     required this.name,
     required this.typeSource,
     required this.type,
@@ -687,7 +687,7 @@ final class _ZigGlobalDecl {
     required this.comments,
   });
 
-  factory _ZigGlobalDecl.fromJson(Map<String, Object?> json) {
+  factory fromJson(Map<String, Object?> json) {
     final typeSource = json['type']! as String;
     return _ZigGlobalDecl(
       name: json['name']! as String,
@@ -718,17 +718,17 @@ List<String> _parseStringList(Object? value) {
 }
 
 sealed class _ZigTypeRef {
-  const _ZigTypeRef();
+  const new();
 }
 
 final class _ZigPrimitiveTypeRef extends _ZigTypeRef {
-  const _ZigPrimitiveTypeRef(this.name);
+  const new(this.name);
 
   final String name;
 }
 
 final class _ZigNamedTypeRef extends _ZigTypeRef {
-  const _ZigNamedTypeRef(this.name);
+  const new(this.name);
 
   final String name;
 }
@@ -736,7 +736,7 @@ final class _ZigNamedTypeRef extends _ZigTypeRef {
 enum _ZigPointerSize { one, many, c }
 
 final class _ZigPointerTypeRef extends _ZigTypeRef {
-  const _ZigPointerTypeRef({
+  const new({
     required this.size,
     required this.isConst,
     required this.sentinelSource,
@@ -826,7 +826,7 @@ int _parseIntegerLiteral(String source) {
 }
 
 final class _PrimitiveSpec {
-  const _PrimitiveSpec({
+  const new({
     required this.nativeType,
     required this.dartType,
     this.fieldAnnotation,
@@ -958,7 +958,7 @@ const _primitiveSpecs = <String, _PrimitiveSpec>{
 };
 
 final class _DartBindingEmitter {
-  const _DartBindingEmitter({required this.api, required this.assetId});
+  const new({required this.api, required this.assetId});
 
   final _ZigApiDescription api;
   final String assetId;

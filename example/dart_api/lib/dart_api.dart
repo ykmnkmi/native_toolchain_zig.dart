@@ -4,7 +4,7 @@ import 'dart:isolate';
 final class Worker {
   static final int _initialized = _init(NativeApi.initializeApiDLData);
 
-  Worker() {
+  new() {
     if (_initialized != 0) {
       throw StateError('Failed to initialize native API');
     }

@@ -61,7 +61,7 @@ enum TokenType {
 }
 
 final class Token {
-  const Token(this.type, this.value, this.offset);
+  const new(this.type, this.value, this.offset);
 
   final TokenType type;
 
@@ -71,7 +71,7 @@ final class Token {
 }
 
 final class Tokenizer {
-  Tokenizer(this.source);
+  new(this.source);
 
   final String source;
 

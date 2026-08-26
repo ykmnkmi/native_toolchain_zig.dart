@@ -16,7 +16,7 @@ enum Optimization {
   /// Release mode optimized for binary size.
   releaseSmall('ReleaseSmall');
 
-  const Optimization(this.name);
+  new(this.name);
 
   final String name;
 }
@@ -28,7 +28,7 @@ final class Target {
   /// Creates a [Target] from Dart's [BuildConfig].
   ///
   /// Throws [UnsupportedError] if the platform is not supported.
-  factory Target.fromBuildConfig(BuildConfig buildConfig) {
+  factory fromBuildConfig(BuildConfig buildConfig) {
     var (archStr, osStr, abiStr) = buildConfig.code.targetTriple;
     return Target(
       arch: archStr,
@@ -41,13 +41,13 @@ final class Target {
   /// Creates a [Target] from Dart's [OS] and [Architecture].
   ///
   /// Throws [UnsupportedError] if the platform is not supported.
-  factory Target.from(Architecture arch, OS os, LinkMode linkMode) {
+  factory from(Architecture arch, OS os, LinkMode linkMode) {
     var (archStr, osStr, abiStr) = mapOsAndArch(os, arch);
     return Target(arch: archStr, os: osStr, abi: abiStr, linkMode: linkMode);
   }
 
   /// Creates a [Target] with explicit components.
-  const Target({
+  const new({
     required this.arch,
     required this.os,
     this.abi,

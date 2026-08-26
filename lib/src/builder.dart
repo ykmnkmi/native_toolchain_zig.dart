@@ -17,7 +17,7 @@ class ZigBuilder implements Builder {
   /// Creates a [ZigBuilder].
   ///
   /// Only [assetName] is required. All other parameters have sensible defaults.
-  const ZigBuilder({
+  const new({
     required this.assetName,
     required this.zigDir,
     this.libraryName,
