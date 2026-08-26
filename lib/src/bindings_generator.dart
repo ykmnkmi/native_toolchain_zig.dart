@@ -585,11 +585,7 @@ final class _ZigTypeDecl {
 }
 
 final class _ZigEnumCase {
-  const new({
-    required this.name,
-    required this.value,
-    required this.comments,
-  });
+  const new({required this.name, required this.value, required this.comments});
 
   final String name;
   final int value;
