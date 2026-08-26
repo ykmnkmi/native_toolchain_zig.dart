@@ -16,14 +16,12 @@ void main() {
       }
     });
 
-    await File(
-      path.join(tempDirectory.path, 'pubspec.yaml'),
-    ).writeAsString('name: cli_binding_test_package\n');
-    await Directory(
-      path.join(tempDirectory.path, 'zig', 'src'),
-    ).create(recursive: true);
-    await File(path.join(tempDirectory.path, 'zig', 'build.zig')).writeAsString(
-      '''
+    await File(path.join(tempDirectory.path, 'pubspec.yaml'))
+        .writeAsString('name: cli_binding_test_package\n');
+    await Directory(path.join(tempDirectory.path, 'zig', 'src'))
+        .create(recursive: true);
+    await File(path.join(tempDirectory.path, 'zig', 'build.zig'))
+        .writeAsString('''
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
@@ -42,11 +40,9 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(lib);
 }
-''',
-    );
-    await File(
-      path.join(tempDirectory.path, 'zig', 'src', 'root.zig'),
-    ).writeAsString('''
+''');
+    await File(path.join(tempDirectory.path, 'zig', 'src', 'root.zig'))
+        .writeAsString('''
 const Point = extern struct {
     x: f32,
     y: f32,

@@ -178,9 +178,8 @@ class ZigBuilder implements Builder {
             if (type == FileSystemEntityType.file) {
               output.dependencies.add(Uri.file(fullPath));
             } else if (type == FileSystemEntityType.directory) {
-              List<FileSystemEntity> entities = Directory(
-                fullPath,
-              ).listSync(recursive: true);
+              List<FileSystemEntity> entities = Directory(fullPath)
+                  .listSync(recursive: true);
 
               for (FileSystemEntity entity in entities) {
                 if (entity is File) {

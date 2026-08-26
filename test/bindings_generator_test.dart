@@ -17,15 +17,12 @@ void main() {
       }
     });
 
-    await File(
-      path.join(tempDirectory.path, 'pubspec.yaml'),
-    ).writeAsString('name: binding_test_package\n');
-    await Directory(
-      path.join(tempDirectory.path, 'zig', 'src'),
-    ).create(recursive: true);
-    await File(
-      path.join(tempDirectory.path, 'zig', 'src', 'root.zig'),
-    ).writeAsString('''
+    await File(path.join(tempDirectory.path, 'pubspec.yaml'))
+        .writeAsString('name: binding_test_package\n');
+    await Directory(path.join(tempDirectory.path, 'zig', 'src'))
+        .create(recursive: true);
+    await File(path.join(tempDirectory.path, 'zig', 'src', 'root.zig'))
+        .writeAsString('''
 const Color = enum(c_int) {
     red = 1,
     green = 2,
@@ -91,15 +88,12 @@ export fn make_point(x: f32, y: f32) Point {
       }
     });
 
-    await File(
-      path.join(tempDirectory.path, 'pubspec.yaml'),
-    ).writeAsString('name: binding_test_package\n');
-    await Directory(
-      path.join(tempDirectory.path, 'zig', 'src'),
-    ).create(recursive: true);
-    await File(
-      path.join(tempDirectory.path, 'zig', 'src', 'root.zig'),
-    ).writeAsString('''
+    await File(path.join(tempDirectory.path, 'pubspec.yaml'))
+        .writeAsString('name: binding_test_package\n');
+    await Directory(path.join(tempDirectory.path, 'zig', 'src'))
+        .create(recursive: true);
+    await File(path.join(tempDirectory.path, 'zig', 'src', 'root.zig'))
+        .writeAsString('''
 //! Root ABI comments should become library docs.
 // Root note for generated bindings.
 
@@ -182,24 +176,20 @@ export fn make_point(x: f32, y: f32) Point { // Function inline note.
         }
       });
 
-      await File(
-        path.join(tempDirectory.path, 'pubspec.yaml'),
-      ).writeAsString('name: binding_test_package\n');
-      await Directory(
-        path.join(tempDirectory.path, 'zig', 'src'),
-      ).create(recursive: true);
-      await File(
-        path.join(tempDirectory.path, 'zig', 'src', 'root.zig'),
-      ).writeAsString('''
+      await File(path.join(tempDirectory.path, 'pubspec.yaml'))
+          .writeAsString('name: binding_test_package\n');
+      await Directory(path.join(tempDirectory.path, 'zig', 'src'))
+          .create(recursive: true);
+      await File(path.join(tempDirectory.path, 'zig', 'src', 'root.zig'))
+          .writeAsString('''
 const api = @import("api.zig");
 
 comptime {
     _ = api;
 }
 ''');
-      await File(
-        path.join(tempDirectory.path, 'zig', 'src', 'api.zig'),
-      ).writeAsString('''
+      await File(path.join(tempDirectory.path, 'zig', 'src', 'api.zig'))
+          .writeAsString('''
 pub const abi = struct {
     pub const Color = enum(c_int) {
         red = 1,
@@ -278,15 +268,12 @@ pub const exports = struct {
         }
       });
 
-      await File(
-        path.join(tempDirectory.path, 'pubspec.yaml'),
-      ).writeAsString('name: binding_test_package\n');
-      await Directory(
-        path.join(tempDirectory.path, 'zig', 'src'),
-      ).create(recursive: true);
-      await File(
-        path.join(tempDirectory.path, 'zig', 'src', 'root.zig'),
-      ).writeAsString('''
+      await File(path.join(tempDirectory.path, 'pubspec.yaml'))
+          .writeAsString('name: binding_test_package\n');
+      await Directory(path.join(tempDirectory.path, 'zig', 'src'))
+          .create(recursive: true);
+      await File(path.join(tempDirectory.path, 'zig', 'src', 'root.zig'))
+          .writeAsString('''
 const api = @import("api.zig");
 
 const TextScanOptions = api.TextScanOptions;
@@ -295,9 +282,8 @@ export fn normalize_options(options: TextScanOptions) TextScanOptions {
     return options;
 }
 ''');
-      await File(
-        path.join(tempDirectory.path, 'zig', 'src', 'api.zig'),
-      ).writeAsString('''
+      await File(path.join(tempDirectory.path, 'zig', 'src', 'api.zig'))
+          .writeAsString('''
 pub const TextScanOptions = extern struct {
     start: usize,
     end: usize,
@@ -345,24 +331,20 @@ pub const TextScanOptions = extern struct {
         }
       });
 
-      await File(
-        path.join(tempDirectory.path, 'pubspec.yaml'),
-      ).writeAsString('name: binding_test_package\n');
-      await Directory(
-        path.join(tempDirectory.path, 'zig', 'src'),
-      ).create(recursive: true);
-      await File(
-        path.join(tempDirectory.path, 'zig', 'src', 'root.zig'),
-      ).writeAsString('''
+      await File(path.join(tempDirectory.path, 'pubspec.yaml'))
+          .writeAsString('name: binding_test_package\n');
+      await Directory(path.join(tempDirectory.path, 'zig', 'src'))
+          .create(recursive: true);
+      await File(path.join(tempDirectory.path, 'zig', 'src', 'root.zig'))
+          .writeAsString('''
 const TextScanOptions = @import("api.zig").TextScanOptions;
 
 export fn normalize_options(options: TextScanOptions) TextScanOptions {
     return options;
 }
 ''');
-      await File(
-        path.join(tempDirectory.path, 'zig', 'src', 'api.zig'),
-      ).writeAsString('''
+      await File(path.join(tempDirectory.path, 'zig', 'src', 'api.zig'))
+          .writeAsString('''
 pub const TextScanOptions = extern struct {
     start: usize,
     end: usize,
@@ -408,24 +390,20 @@ pub const TextScanOptions = extern struct {
       }
     });
 
-    await File(
-      path.join(tempDirectory.path, 'pubspec.yaml'),
-    ).writeAsString('name: binding_test_package\n');
-    await Directory(
-      path.join(tempDirectory.path, 'zig', 'src'),
-    ).create(recursive: true);
-    await File(
-      path.join(tempDirectory.path, 'zig', 'src', 'root.zig'),
-    ).writeAsString('''
+    await File(path.join(tempDirectory.path, 'pubspec.yaml'))
+        .writeAsString('name: binding_test_package\n');
+    await Directory(path.join(tempDirectory.path, 'zig', 'src'))
+        .create(recursive: true);
+    await File(path.join(tempDirectory.path, 'zig', 'src', 'root.zig'))
+        .writeAsString('''
 const api = @import("api.zig");
 
 comptime {
     _ = api;
 }
 ''');
-    await File(
-      path.join(tempDirectory.path, 'zig', 'src', 'api.zig'),
-    ).writeAsString('''
+    await File(path.join(tempDirectory.path, 'zig', 'src', 'api.zig'))
+        .writeAsString('''
 pub const exports = struct {
     export fn answer() i32 {
         return 42;
@@ -465,15 +443,12 @@ pub const exports = struct {
       }
     });
 
-    await File(
-      path.join(tempDirectory.path, 'pubspec.yaml'),
-    ).writeAsString('name: binding_test_package\n');
-    await Directory(
-      path.join(tempDirectory.path, 'zig', 'src'),
-    ).create(recursive: true);
-    await File(
-      path.join(tempDirectory.path, 'zig', 'src', 'root.zig'),
-    ).writeAsString('''
+    await File(path.join(tempDirectory.path, 'pubspec.yaml'))
+        .writeAsString('name: binding_test_package\n');
+    await Directory(path.join(tempDirectory.path, 'zig', 'src'))
+        .create(recursive: true);
+    await File(path.join(tempDirectory.path, 'zig', 'src', 'root.zig'))
+        .writeAsString('''
 pub fn helper() void {
     const Local = struct {
         export fn hidden() i32 {

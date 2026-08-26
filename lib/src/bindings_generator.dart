@@ -328,9 +328,8 @@ String _defaultAssetId({
 }
 
 String _readPackageName(String packageRoot) {
-  final pubspecContents = File(
-    path.join(packageRoot, 'pubspec.yaml'),
-  ).readAsStringSync();
+  final pubspecContents = File(path.join(packageRoot, 'pubspec.yaml'))
+      .readAsStringSync();
   final match = RegExp(
     r'''^name:\s*['"]?([A-Za-z0-9_]+)['"]?\s*$''',
     multiLine: true,
@@ -753,9 +752,8 @@ final class _ZigPointerTypeRef extends _ZigTypeRef {
 _ZigTypeRef _parseZigTypeRef(String source) {
   final normalized = _normalizeTypeSource(source);
 
-  final cPointerMatch = RegExp(
-    r'^\[\*c\]\s*(const\s+)?(.+)$',
-  ).firstMatch(normalized);
+  final cPointerMatch = RegExp(r'^\[\*c\]\s*(const\s+)?(.+)$')
+      .firstMatch(normalized);
   if (cPointerMatch != null) {
     return _ZigPointerTypeRef(
       size: _ZigPointerSize.c,
@@ -777,9 +775,8 @@ _ZigTypeRef _parseZigTypeRef(String source) {
     );
   }
 
-  final singlePointerMatch = RegExp(
-    r'^\*\s*(const\s+)?(.+)$',
-  ).firstMatch(normalized);
+  final singlePointerMatch = RegExp(r'^\*\s*(const\s+)?(.+)$')
+      .firstMatch(normalized);
   if (singlePointerMatch != null) {
     return _ZigPointerTypeRef(
       size: _ZigPointerSize.one,
