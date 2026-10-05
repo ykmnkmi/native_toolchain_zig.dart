@@ -6,8 +6,8 @@ bindings — no hand-written `@Native` annotations needed.
 
 ## Prerequisites
 
-- Dart SDK ^3.11.0
-- Zig 0.15.x installed and available on `PATH`
+- Dart SDK ^3.13.0
+- Zig 0.15.2 or 0.16.0 installed and available on `PATH`
 
 ## Generating Bindings
 
@@ -50,8 +50,8 @@ dart run bindings:main
 
 1. `zig/src/counter.zig` defines exported functions (`export fn`) and an
    `extern struct` (`Counter`).
-2. The `bindings` CLI runs `zig translate-c` under the hood to extract the
-   exported ABI surface, then generates `lib/ffi.g.dart`.
+2. The `bindings` CLI extracts the exported ABI surface from Zig source,
+   then generates `lib/ffi.g.dart`. C imports use `zig translate-c`.
 3. `lib/bindings.dart` wraps the raw FFI calls in a Dart-friendly
    `CounterWrapper` class.
 4. The build hook (`hook/build.dart`) compiles the Zig code into a native

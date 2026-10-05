@@ -11,7 +11,7 @@ export fn dart_api_init(data: ?*anyopaque) isize {
     return c.Dart_InitializeApiDL(data);
 }
 
-const Worker = struct {
+const Worker = extern struct {
     receiver_port: c.Dart_Port_DL,
     send_port: c.Dart_Port_DL,
 

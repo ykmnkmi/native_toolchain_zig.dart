@@ -41,6 +41,18 @@ Future<void> main(List<String> arguments) async {
           'Defaults to package:<name>/<path-under-lib>.',
     )
     ..addOption(
+      'target',
+      help: 'Zig target triple used when translating C imports.',
+    )
+    ..addOption(
+      'sysroot',
+      help: 'Target C system root passed to `zig translate-c`.',
+    )
+    ..addFlag(
+      'link-libc',
+      help: 'Override libc header support for C translation; otherwise inferred from build.zig.',
+    )
+    ..addOption(
       'package-root',
       help: 'Override the package root. Defaults to the current directory.',
       defaultsTo: Directory.current.path,
@@ -100,6 +112,11 @@ Future<void> main(List<String> arguments) async {
     zigDirectory: command['zig-dir'] as String?,
     rootSourceFile: command['root-source-file'] as String?,
     assetId: command['asset-id'] as String?,
+    target: command['target'] as String?,
+    sysroot: command['sysroot'] as String?,
+    linkLibc: command.wasParsed('link-libc')
+        ? command['link-libc'] as bool
+        : null,
     watch: command['watch'] as bool,
   );
 

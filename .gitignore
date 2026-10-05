@@ -6,3 +6,11 @@
 build/
 zig-out/
 pubspec.lock
+
+# Intermediate files emitted while translating @cImport bindings.
+.zigchain_cimport.zig
+.zigchain_cimport_source.c
+
+# Temporary build wrappers for the libc comptime probe.
+.zigchain_probe_*.zig
+.zigchain_probe_*.zig.zon

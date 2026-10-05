@@ -5,10 +5,12 @@ void main() {
   print('=== Generated Bindings Demo ===');
   print('');
 
-  // Simple function calls using generated bindings
+  // #region generated-calls
+  // Simple function calls using generated bindings.
   print('add(3, 4)           = ${add(3, 4)}');
   print('multiply(2.5, 4.0)  = ${multiply(2.5, 4.0)}');
   print('clampValue(15, 0,10) = ${clamp_value(15, 0, 10)}');
+  // #endregion
   print('');
 
   // Counter struct via Dart wrapper

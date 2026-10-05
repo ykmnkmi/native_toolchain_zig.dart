@@ -1,0 +1,12 @@
+.{
+    .name = .cimport,
+    .version = "0.1.0",
+    .fingerprint = 0x0bbee6b881f73cce,
+    .minimum_zig_version = "0.15.0",
+    .paths = .{
+        "src",
+        "include",
+        "build.zig",
+        "build.zig.zon",
+    },
+}

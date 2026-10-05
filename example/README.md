@@ -6,6 +6,11 @@ Shows how to use the `bindings` CLI to generate Dart FFI bindings from Zig sourc
 automatically. The generated file provides typed structs and function bindings
 with no hand-written `@Native` annotations.
 
+## [`cimport`][cimport] — cImport Stress Example
+
+Shows a more complex `@cImport` surface with nested headers, structs, unions,
+enums, callbacks, and array fields.
+
 ## [`math`][math] — Simple Native Math Library
 
 A minimal example showing how to compile a Zig library and call its exported
@@ -17,5 +22,6 @@ Demonstrates integrating with `dart_api_dl.h` from Zig to pass messages between
 Dart isolates and native code using `Dart_NewNativePort_DL` and `Dart_PostCObject_DL`.
 
 [bindings]: https://github.com/ykmnkmi/native_toolchain_zig.dart/tree/main/example/bindings
+[cimport]: https://github.com/ykmnkmi/native_toolchain_zig.dart/tree/main/example/cimport
 [math]: https://github.com/ykmnkmi/native_toolchain_zig.dart/tree/main/example/math
 [dart_api]: https://github.com/ykmnkmi/native_toolchain_zig.dart/tree/main/example/dart_api

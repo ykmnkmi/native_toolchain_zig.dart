@@ -18,6 +18,7 @@ enum Optimization {
 
   new(this.name);
 
+  /// The option value passed to Zig, such as `ReleaseSafe`.
   final String name;
 }
 
@@ -63,6 +64,7 @@ final class Target {
   /// The ABI (e.g., 'android', 'gnu', 'musl'). May be null.
   final String? abi;
 
+  /// The native linkage mode requested by the Dart build configuration.
   final LinkMode linkMode;
 
   /// The library file prefix for this target ('lib' or '').

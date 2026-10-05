@@ -26,7 +26,12 @@ on:
 
 jobs:
   test:
+    name: Test (Zig ${{ matrix.zig-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        zig-version: [0.15.2, 0.16.0]
 
     steps:
       - uses: actions/checkout@v4
@@ -39,10 +44,18 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: ${{ matrix.zig-version }}
 
       - name: Install dependencies
         run: dart pub get
+
+      - name: Regenerate example bindings
+        run: |
+          dart run native_toolchain_zig:zig bindings --package-root example/bindings --root-source-file src/counter.zig --output lib/ffi.g.dart
+          dart run native_toolchain_zig:zig bindings --package-root example/cimport --output lib/ffi.g.dart
+          dart run native_toolchain_zig:zig bindings --package-root example/dart_api --output lib/my_package.dart --asset-id package:dart_api/dart_api.dart
+          dart format example/bindings/lib/ffi.g.dart example/cimport/lib/ffi.g.dart example/dart_api/lib/my_package.dart
+          git diff --exit-code -- example/bindings/lib/ffi.g.dart example/cimport/lib/ffi.g.dart example/dart_api/lib/my_package.dart
 
       - name: Verify formatting
         run: dart format --output=none --set-exit-if-changed .
@@ -51,7 +64,7 @@ jobs:
         run: dart analyze --fatal-infos
 
       - name: Run Zig metadata dumper tests
-        run: zig test lib/src/zig_api_dump.zig
+        run: zig test lib/src/zig/dump.zig
 
       - name: Run math example Zig tests
         run: zig build test
@@ -64,6 +77,18 @@ jobs:
       - name: Run bindings example
         run: dart run bindings:main
         working-directory: example/bindings
+
+      - name: Run cImport example
+        run: dart run cimport:main
+        working-directory: example/cimport
+
+      - name: Run math example
+        run: dart run math:main
+        working-directory: example/math
+
+      - name: Run Dart API example
+        run: dart run dart_api:main
+        working-directory: example/dart_api
 
       - name: Run tests
         run: dart test -P ci

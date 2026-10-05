@@ -9,14 +9,18 @@ import 'package:native_toolchain_zig/src/utils.dart' as utils;
 import 'package:native_toolchain_zig/src/zon_parser.dart';
 import 'package:path/path.dart' as path;
 
-/// Builds Zig code as native assets using `zig build`.
+/// A Zig compiler integration for Dart native-asset build hooks.
 ///
 /// Integrates with Dart's build hooks to automatically compile Zig code
-/// when building your Dart/Flutter application.
+/// when building your Dart/Flutter application. The Zig build must install a
+/// library with a name matching [libraryName] or the Dart package name.
+///
+/// {@example /example/bindings/hook/build.dart#build-hook}
 class ZigBuilder implements Builder {
-  /// Creates a [ZigBuilder].
+  /// Creates a build hook for the Zig project at [zigDir].
   ///
-  /// Only [assetName] is required. All other parameters have sensible defaults.
+  /// [assetName] and [zigDir] are required. [optimization] defaults to
+  /// [Optimization.releaseSafe].
   const new({
     required this.assetName,
     required this.zigDir,
@@ -27,7 +31,8 @@ class ZigBuilder implements Builder {
 
   /// The asset name for the compiled library.
   ///
-  /// This should correspond to the Dart file containing `@Native` annotations.
+  /// The path component of the registered `package:<name>/<assetName>` ID.
+  /// For bindings generated into `lib/src/ffi.g.dart`, use `src/ffi.g.dart`.
   final String assetName;
 
   /// Path to the Zig project directory relative to package root.
@@ -40,31 +45,29 @@ class ZigBuilder implements Builder {
   /// Defaults to the Dart package name.
   final String? libraryName;
 
-  /// Override the optimization level.
-  ///
-  /// If `null`, automatically selects based on build configuration.
+  /// The Zig optimization mode, defaulting to [Optimization.releaseSafe].
   final Optimization optimization;
 
   /// Additional arguments to pass to `zig build`.
   ///
-  /// Use this to pass custom options to your build.zig, for example:
-  /// ```dart
-  /// ZigBuilder(
-  ///   assetName: 'my_package.dart',
-  ///   zigDir: 'zig/',
-  ///   extraArguments: ['-Dlinkage=static'],
-  /// )
-  /// ```
+  /// Passed after the target and optimization flags. For example,
+  /// `['-Dlinkage=static']` selects a custom `linkage` option when supported
+  /// by the project's `build.zig`.
   final List<String> extraArguments;
 
-  /// Runs the Zig build process.
+  /// Compiles the Zig library and registers it in [output].
+  ///
+  /// Uses [input] to select the target and output directories. [assetRouting]
+  /// defaults to bundling the library with the application. Returns immediately
+  /// when code assets are disabled. Throws [BuildError] if the Zig project is
+  /// missing or the build fails.
   ///
   /// This method:
-  /// 1. Validates that Zig is installed
-  /// 2. Locates the Zig project directory
-  /// 3. Runs `zig build` with target and optimization flags
-  /// 4. Registers the built library as a code asset
-  /// 5. Tracks source files for incremental builds
+  /// 1. Validates that Zig is installed.
+  /// 2. Locates the Zig project directory.
+  /// 3. Runs `zig build` with target and optimization flags.
+  /// 4. Registers the built library as a code asset.
+  /// 5. Tracks source files for incremental builds.
   @override
   Future<void> run({
     required BuildInput input,
