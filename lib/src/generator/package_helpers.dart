@@ -94,7 +94,7 @@ File _resolveRootSourceFile({
     final inferredFromBuild = _readRootSourceFileFromBuildZig(buildZigFile);
     if (inferredFromBuild != null) {
       final inferredFile = File(
-        path.join(zigDirectory.path, inferredFromBuild),
+        path.normalize(path.join(zigDirectory.path, inferredFromBuild)),
       );
       if (inferredFile.existsSync()) {
         return inferredFile;
@@ -103,7 +103,9 @@ File _resolveRootSourceFile({
   }
 
   for (final candidate in _commonRootSourceFileCandidates) {
-    final candidateFile = File(path.join(zigDirectory.path, candidate));
+    final candidateFile = File(
+      path.normalize(path.join(zigDirectory.path, candidate)),
+    );
     if (candidateFile.existsSync()) {
       return candidateFile;
     }

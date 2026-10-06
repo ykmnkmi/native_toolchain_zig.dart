@@ -883,6 +883,10 @@ pub const exports = struct {
     );
 
     expect(
+      result.rootSourceFilePath,
+      path.join(tempDirectory.path, 'zig', 'src', 'root.zig'),
+    );
+    expect(
       result.dependencies,
       contains(path.join(tempDirectory.path, 'zig', 'src', 'root.zig')),
     );
