@@ -103,8 +103,10 @@ passed through `ZigBuilder.extraArguments`.
 }
 ```
 
-Replace the fingerprint placeholder with the fingerprint suggested by `zig build`
-for your package name. Include local C headers in `.paths` when using `@cImport`.
+Run `zig build` from the `zig/` directory. Zig will report a missing fingerprint
+and suggest a value; this initial failure is expected. Add `.fingerprint` to the
+top-level object using the exact hexadecimal value from the diagnostic.
+Include local C headers in `.paths` when using `@cImport`.
 
 > [!IMPORTANT]
 > The `paths` field drives **incremental build tracking**. `ZigBuilder` parses
@@ -123,6 +125,8 @@ export fn add(a: i32, b: i32) i32 {
     return a + b;
 }
 ```
+
+Rerun `zig build` from the `zig/` directory to verify the project builds.
 
 6. Generate Dart bindings in `lib/my_package.dart`:
 
